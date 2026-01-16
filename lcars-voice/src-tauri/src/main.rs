@@ -1,27 +1,77 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
+mod database;
+
+use database::{Database, Transcription};
+use std::sync::{
+    atomic::{AtomicBool, Ordering},
+    Mutex,
+};
 use tauri::{
     image::Image,
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
-    Emitter, Manager,
+    Emitter, Manager, State,
 };
 use tauri_plugin_global_shortcut::{Code, GlobalShortcutExt, Modifiers, Shortcut};
 
+struct AppState {
+    db: Mutex<Database>,
+    is_recording: AtomicBool,
+}
+
+#[tauri::command]
+fn get_history(state: State<AppState>, limit: Option<usize>) -> Result<Vec<Transcription>, String> {
+    let db = state.db.lock().map_err(|e| e.to_string())?;
+    db.get_history(limit.unwrap_or(100))
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn search_history(
+    state: State<AppState>,
+    query: String,
+    limit: Option<usize>,
+) -> Result<Vec<Transcription>, String> {
+    let db = state.db.lock().map_err(|e| e.to_string())?;
+    db.search(&query, limit.unwrap_or(100))
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn add_transcription(
+    state: State<AppState>,
+    text: String,
+    duration_ms: Option<i64>,
+    model: Option<String>,
+) -> Result<i64, String> {
+    let db = state.db.lock().map_err(|e| e.to_string())?;
+    db.add_transcription(&text, duration_ms, &model.unwrap_or_else(|| "base".to_string()))
+        .map_err(|e| e.to_string())
+}
+
 fn main() {
-    let is_recording = Arc::new(AtomicBool::new(false));
+    let db = Database::new().expect("Failed to initialize database");
+    let app_state = AppState {
+        db: Mutex::new(db),
+        is_recording: AtomicBool::new(false),
+    };
 
     tauri::Builder::default()
         .plugin(tauri_plugin_global_shortcut::Builder::new().build())
+        .manage(app_state)
+        .invoke_handler(tauri::generate_handler![
+            get_history,
+            search_history,
+            add_transcription
+        ])
         .setup(move |app| {
-            let recording_state = is_recording.clone();
             let app_handle = app.handle().clone();
 
             // Register Super+H hotkey
             let shortcut = Shortcut::new(Some(Modifiers::SUPER), Code::KeyH);
-            app.global_shortcut().on_shortcut(shortcut, move |_app, _shortcut, _event| {
-                let was_recording = recording_state.fetch_xor(true, Ordering::SeqCst);
+            app.global_shortcut().on_shortcut(shortcut, move |app, _shortcut, _event| {
+                let state = app.state::<AppState>();
+                let was_recording = state.is_recording.fetch_xor(true, Ordering::SeqCst);
                 if was_recording {
                     // Was recording, now stopping
                     let _ = app_handle.emit("recording-stopped", ());
