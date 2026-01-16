@@ -1,0 +1,81 @@
+#!/bin/bash
+# Voice-to-text toggle script
+# Press Super+H to toggle recording on/off
+
+VENV_PATH="$HOME/voice-to-text-env"
+PID_FILE="/tmp/voice-recording.pid"
+AUDIO_FILE="/tmp/voice-recording.wav"
+MODEL="${WHISPER_MODEL:-base}"
+LOCK_FILE="/tmp/voice-recording.lock"
+
+show_status() {
+    # Kill any existing dialog and show new one
+    pkill -f "zenity.*Voice to Text" 2>/dev/null || true
+    zenity --info \
+        --title="Voice to Text" \
+        --text="$1" \
+        --width=300 \
+        --ok-label="Close" 2>/dev/null &
+}
+
+start_recording() {
+    rm -f "$AUDIO_FILE" "$PID_FILE" 2>/dev/null
+
+    show_status "🎤 Recording...\n\nPress Super+H to stop"
+
+    arecord -f S16_LE -r 16000 -c 1 "$AUDIO_FILE" &>/dev/null &
+    echo $! > "$PID_FILE"
+}
+
+stop_and_transcribe() {
+    if [ -f "$LOCK_FILE" ]; then
+        return
+    fi
+    touch "$LOCK_FILE"
+
+    if [ -f "$PID_FILE" ]; then
+        PID=$(cat "$PID_FILE")
+        kill "$PID" 2>/dev/null || true
+        rm -f "$PID_FILE"
+
+        sleep 0.3
+
+        if [ -f "$AUDIO_FILE" ] && [ -s "$AUDIO_FILE" ]; then
+            show_status "⏳ Transcribing..."
+
+            source "$VENV_PATH/bin/activate"
+            whisper "$AUDIO_FILE" --model "$MODEL" --language en --output_format txt --output_dir /tmp &>/dev/null
+
+            TEXT_FILE="/tmp/voice-recording.txt"
+            if [ -f "$TEXT_FILE" ]; then
+                TRANSCRIPTION=$(cat "$TEXT_FILE")
+                rm -f "$TEXT_FILE"
+
+                if [ -n "$TRANSCRIPTION" ]; then
+                    echo -n "$TRANSCRIPTION" | xclip -selection clipboard
+                    PREVIEW="${TRANSCRIPTION:0:80}"
+                    [ ${#TRANSCRIPTION} -gt 80 ] && PREVIEW="${PREVIEW}..."
+                    show_status "✓ Copied to clipboard:\n\n\"$PREVIEW\"\n\nPress Super+H to record again"
+                else
+                    show_status "No speech detected\n\nPress Super+H to try again"
+                fi
+            else
+                show_status "❌ Transcription failed\n\nPress Super+H to try again"
+            fi
+
+            rm -f "$AUDIO_FILE"
+        else
+            show_status "No audio recorded\n\nPress Super+H to try again"
+        fi
+    fi
+
+    rm -f "$LOCK_FILE"
+}
+
+# Toggle logic
+if [ -f "$PID_FILE" ] && kill -0 "$(cat "$PID_FILE")" 2>/dev/null; then
+    stop_and_transcribe
+else
+    rm -f "$PID_FILE" "$LOCK_FILE" 2>/dev/null
+    start_recording
+fi
