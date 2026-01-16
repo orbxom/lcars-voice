@@ -4,11 +4,25 @@
   <meta charset="UTF-8">
   <title>LCARS Voice</title>
   <style>
-    body { background: #000; color: #FF9900; font-family: sans-serif; }
+    body { background: #000; color: #FF9900; font-family: sans-serif; padding: 20px; }
+    .recording { color: #CC4444; }
   </style>
 </head>
 <body>
   <h1>LCARS Voice Interface</h1>
-  <p>Tauri is working!</p>
+  <p id="status">Status: Ready</p>
+  <script>
+    const { listen } = window.__TAURI__.event;
+
+    listen('recording-started', () => {
+      document.getElementById('status').textContent = 'Status: RECORDING';
+      document.getElementById('status').classList.add('recording');
+    });
+
+    listen('recording-stopped', () => {
+      document.getElementById('status').textContent = 'Status: Processing...';
+      document.getElementById('status').classList.remove('recording');
+    });
+  </script>
 </body>
 </html>
