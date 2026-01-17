@@ -26,6 +26,7 @@ class LCARSVoiceInterface {
   }
 
   async init() {
+    console.log('[LCARS] app: Initializing LCARSVoiceInterface');
     this.bindEvents();
     this.bindTauriEvents();
     this.updateStardate();
@@ -35,10 +36,15 @@ class LCARSVoiceInterface {
 
     // Update stardate every minute
     setInterval(() => this.updateStardate(), 60000);
+    console.log('[LCARS] app: Initialization complete');
   }
 
   bindEvents() {
-    this.elements.recordBtn.addEventListener('click', () => this.toggleRecording());
+    console.log('[LCARS] app: Binding UI events');
+    this.elements.recordBtn.addEventListener('click', () => {
+      console.log('[LCARS] app: Record button clicked');
+      this.toggleRecording();
+    });
     this.elements.searchInput.addEventListener('input', (e) => this.filterHistory(e.target.value));
 
     // Window controls for Tauri
@@ -62,35 +68,60 @@ class LCARSVoiceInterface {
   }
 
   bindTauriEvents() {
+    console.log('[LCARS] app: Binding Tauri events');
     if (!window.__TAURI__?.event) {
-      console.error('Tauri API not available');
+      console.error('[LCARS] app: Tauri API not available');
       return;
     }
     const { listen } = window.__TAURI__.event;
 
     listen('recording-started', () => {
+      console.log('[LCARS] event: Received recording-started');
       this.isRecording = true;
+      console.log('[LCARS] state: isRecording = true');
       this.updateUI('recording');
       this.startWaveformAnimation();
     });
 
     listen('transcribing', () => {
+      console.log('[LCARS] event: Received transcribing');
       this.isRecording = false;
       this.isTranscribing = true;
+      console.log('[LCARS] state: isRecording = false, isTranscribing = true');
       this.stopWaveformAnimation();
       this.updateUI('transcribing');
     });
 
     listen('transcription-complete', async (event) => {
+      console.log('[LCARS] event: Received transcription-complete');
       this.isTranscribing = false;
       const text = event.payload;
+      console.log('[LCARS] event: Transcription text =', JSON.stringify(text));
+      console.log('[LCARS] event: Transcription text length =', text ? text.length : 'null/undefined');
 
       // Copy to clipboard via Tauri
       try {
-        const { writeText } = window.__TAURI__.clipboard;
+        console.log('[LCARS] app: Copying to clipboard, text =', JSON.stringify(text));
+        console.log('[LCARS] app: window.__TAURI__ keys =', Object.keys(window.__TAURI__ || {}));
+
+        // Try different clipboard API paths for Tauri 2.x
+        let writeText;
+        if (window.__TAURI__?.clipboard?.writeText) {
+          console.log('[LCARS] app: Using window.__TAURI__.clipboard.writeText');
+          writeText = window.__TAURI__.clipboard.writeText;
+        } else if (window.__TAURI__?.clipboardManager?.writeText) {
+          console.log('[LCARS] app: Using window.__TAURI__.clipboardManager.writeText');
+          writeText = window.__TAURI__.clipboardManager.writeText;
+        } else {
+          console.error('[LCARS] app: No clipboard API found!');
+          console.log('[LCARS] app: __TAURI__ structure:', JSON.stringify(Object.keys(window.__TAURI__ || {})));
+          throw new Error('Clipboard API not found');
+        }
+
         await writeText(text);
+        console.log('[LCARS] app: Copied to clipboard successfully');
       } catch (e) {
-        console.error('Failed to copy to clipboard:', e);
+        console.error('[LCARS] app: Failed to copy to clipboard:', e);
       }
 
       // Reload history from database
@@ -102,8 +133,11 @@ class LCARSVoiceInterface {
     });
 
     listen('transcription-error', (event) => {
+      console.log('[LCARS] event: Received transcription-error');
+      console.log('[LCARS] event: Error payload =', event.payload);
       this.isTranscribing = false;
       this.isRecording = false;
+      console.log('[LCARS] state: isRecording = false, isTranscribing = false');
       this.stopWaveformAnimation();
       this.updateUI('ready');
       this.startIdleWaveform();
@@ -124,27 +158,36 @@ class LCARSVoiceInterface {
   }
 
   async toggleRecording() {
-    if (this.isTranscribing) return;
+    console.log('[LCARS] app: toggleRecording() called, isRecording =', this.isRecording, 'isTranscribing =', this.isTranscribing);
+    if (this.isTranscribing) {
+      console.log('[LCARS] app: Currently transcribing, ignoring toggle');
+      return;
+    }
 
     if (!window.__TAURI__?.core) {
-      console.error('Tauri core API not available');
+      console.error('[LCARS] app: Tauri core API not available');
       this.flashStatus('ERROR: Tauri not available');
       return;
     }
 
     try {
       if (this.isRecording) {
+        console.log('[LCARS] app: Invoking stop_recording command');
         await window.__TAURI__.core.invoke('stop_recording');
+        console.log('[LCARS] app: stop_recording command completed');
       } else {
+        console.log('[LCARS] app: Invoking start_recording command');
         await window.__TAURI__.core.invoke('start_recording');
+        console.log('[LCARS] app: start_recording command completed');
       }
     } catch (e) {
-      console.error('Recording toggle failed:', e);
+      console.error('[LCARS] app: Recording toggle failed:', e);
       this.flashStatus('ERROR: ' + e);
     }
   }
 
   updateUI(state) {
+    console.log('[LCARS] app: updateUI() called with state =', state);
     this.elements.frame.classList.remove('recording', 'transcribing');
     this.elements.statusIndicator.classList.remove('recording', 'transcribing');
     this.elements.recordBtn.classList.remove('recording');

@@ -57,9 +57,17 @@ fn add_transcription(
 }
 
 #[tauri::command]
-fn start_recording(state: State<AppState>) -> Result<(), String> {
+fn start_recording(app: tauri::AppHandle, state: State<AppState>) -> Result<(), String> {
+    println!("[LCARS] command: start_recording called");
     let mut recorder = state.recorder.lock().map_err(|e| e.to_string())?;
-    recorder.start()
+    let result = recorder.start();
+    println!("[LCARS] command: start_recording result = {:?}", result);
+    if result.is_ok() {
+        state.is_recording.store(true, std::sync::atomic::Ordering::SeqCst);
+        println!("[LCARS] event: Emitting 'recording-started' from command");
+        let _ = app.emit("recording-started", ());
+    }
+    result
 }
 
 #[tauri::command]
@@ -77,25 +85,68 @@ async fn transcribe_audio(state: State<'_, AppState>, audio_path: String) -> Res
 }
 
 #[tauri::command]
-fn stop_recording(state: State<AppState>) -> Result<String, String> {
-    let mut recorder = state.recorder.lock().map_err(|e| e.to_string())?;
-    let path = recorder.stop()?;
-    Ok(path.to_string_lossy().to_string())
+fn stop_recording(app: tauri::AppHandle, state: State<AppState>) -> Result<String, String> {
+    println!("[LCARS] command: stop_recording called");
+    state.is_recording.store(false, std::sync::atomic::Ordering::SeqCst);
+
+    let audio_path = {
+        let mut recorder = state.recorder.lock().map_err(|e| e.to_string())?;
+        recorder.stop()?
+    };
+    println!("[LCARS] command: stop_recording path = {:?}", audio_path);
+
+    // Emit transcribing event and start transcription in background
+    println!("[LCARS] event: Emitting 'transcribing' from command");
+    let _ = app.emit("transcribing", ());
+
+    let venv = state.venv_path.clone();
+    let model = state.model.clone();
+    let path_clone = audio_path.clone();
+    let app_clone = app.clone();
+    let state_model = state.model.clone();
+
+    std::thread::spawn(move || {
+        println!("[LCARS] thread: Transcription thread started from command");
+        let result = transcription::transcribe(&path_clone, &model, &venv);
+
+        match result {
+            Ok(text) => {
+                println!("[LCARS] thread: Transcription successful, text length = {}", text.len());
+                // Note: Can't easily access db here, but that's okay for now
+                println!("[LCARS] event: Emitting 'transcription-complete' from command");
+                let _ = app_clone.emit("transcription-complete", text);
+            }
+            Err(e) => {
+                println!("[LCARS] thread: Transcription error = {}", e);
+                println!("[LCARS] event: Emitting 'transcription-error' from command");
+                let _ = app_clone.emit("transcription-error", e);
+            }
+        }
+    });
+
+    Ok(audio_path.to_string_lossy().to_string())
 }
 
 fn main() {
+    println!("[LCARS] main: Application starting");
     let db = Database::new().expect("Failed to initialize database");
+    println!("[LCARS] main: Database initialized");
     let recorder = Recorder::new();
+    println!("[LCARS] main: Recorder initialized");
     let venv_path = dirs::home_dir()
         .unwrap_or_else(|| PathBuf::from("."))
         .join("voice-to-text-env");
+    println!("[LCARS] main: venv_path = {:?}", venv_path);
+
+    let model = std::env::var("WHISPER_MODEL").unwrap_or_else(|_| "base".to_string());
+    println!("[LCARS] main: Using whisper model = {}", model);
 
     let app_state = AppState {
         db: Mutex::new(db),
         recorder: Mutex::new(recorder),
         is_recording: AtomicBool::new(false),
         venv_path,
-        model: std::env::var("WHISPER_MODEL").unwrap_or_else(|_| "base".to_string()),
+        model,
     };
 
     tauri::Builder::default()
@@ -111,17 +162,23 @@ fn main() {
             transcribe_audio
         ])
         .setup(move |app| {
+            println!("[LCARS] setup: Registering Super+H hotkey");
             // Register Super+H hotkey
             let shortcut = Shortcut::new(Some(Modifiers::SUPER), Code::KeyH);
-            app.global_shortcut().on_shortcut(shortcut, move |app, _shortcut, _event| {
+            match app.global_shortcut().on_shortcut(shortcut, move |app, _shortcut, _event| {
+                println!("[LCARS] hotkey: Super+H pressed");
                 let state = app.state::<AppState>();
                 let was_recording = state.is_recording.load(Ordering::SeqCst);
+                println!("[LCARS] hotkey: was_recording = {}", was_recording);
 
                 if was_recording {
                     // Stop recording and transcribe
+                    println!("[LCARS] hotkey: Stopping recording and transcribing");
                     state.is_recording.store(false, Ordering::SeqCst);
+                    println!("[LCARS] state: is_recording set to false");
                     let app_clone = app.clone();
                     std::thread::spawn(move || {
+                        println!("[LCARS] thread: Transcription thread started");
                         let state: State<AppState> = app_clone.state();
 
                         // Stop recording
@@ -137,6 +194,8 @@ fn main() {
 
                         match audio_path {
                             Ok(path) => {
+                                println!("[LCARS] thread: Audio path = {:?}", path);
+                                println!("[LCARS] event: Emitting 'transcribing'");
                                 let _ = app_clone.emit("transcribing", ());
 
                                 // Transcribe
@@ -148,34 +207,54 @@ fn main() {
 
                                 match result {
                                     Ok(text) => {
+                                        println!("[LCARS] thread: Transcription successful, text length = {}", text.len());
                                         // Add to history
                                         if let Ok(db) = state.db.lock() {
                                             let _ = db.add_transcription(&text, None, &state.model);
+                                            println!("[LCARS] thread: Added transcription to history");
                                         }
 
                                         // Copy to clipboard (via frontend)
+                                        println!("[LCARS] event: Emitting 'transcription-complete'");
                                         let _ = app_clone.emit("transcription-complete", text);
                                     }
                                     Err(e) => {
+                                        println!("[LCARS] thread: Transcription error = {}", e);
+                                        println!("[LCARS] event: Emitting 'transcription-error'");
                                         let _ = app_clone.emit("transcription-error", e);
                                     }
                                 }
                             }
                             Err(e) => {
+                                println!("[LCARS] thread: Stop recording error = {}", e);
+                                println!("[LCARS] event: Emitting 'transcription-error'");
                                 let _ = app_clone.emit("transcription-error", e);
                             }
                         }
                     });
                 } else {
                     // Start recording
+                    println!("[LCARS] hotkey: Starting recording");
                     if let Ok(mut recorder) = state.recorder.lock() {
-                        if recorder.start().is_ok() {
-                            state.is_recording.store(true, Ordering::SeqCst);
-                            let _ = app.emit("recording-started", ());
+                        match recorder.start() {
+                            Ok(()) => {
+                                state.is_recording.store(true, Ordering::SeqCst);
+                                println!("[LCARS] state: is_recording set to true");
+                                println!("[LCARS] event: Emitting 'recording-started'");
+                                let _ = app.emit("recording-started", ());
+                            }
+                            Err(e) => {
+                                println!("[LCARS] hotkey: Failed to start recording = {}", e);
+                            }
                         }
+                    } else {
+                        println!("[LCARS] hotkey: Failed to lock recorder");
                     }
                 }
-            })?;
+            }) {
+                Ok(_) => println!("[LCARS] setup: Hotkey registered successfully"),
+                Err(e) => println!("[LCARS] setup: Failed to register hotkey = {:?}", e),
+            }
 
             // Load tray icons
             let idle_icon = Image::from_path("icons/tray-idle.png")
