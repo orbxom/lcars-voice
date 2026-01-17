@@ -25,6 +25,16 @@ fn is_valid_whisper_model(model: &str) -> bool {
     VALID_WHISPER_MODELS.contains(&model)
 }
 
+fn get_default_whisper_model() -> &'static str {
+    "base"
+}
+
+fn resolve_whisper_model(store_value: Option<String>, env_value: Option<String>) -> String {
+    store_value
+        .or(env_value)
+        .unwrap_or_else(|| get_default_whisper_model().to_string())
+}
+
 struct AppState {
     db: Mutex<Database>,
     recorder: Mutex<Recorder>,
