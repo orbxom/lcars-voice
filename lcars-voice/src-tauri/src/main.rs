@@ -102,6 +102,14 @@ async fn transcribe_audio(state: State<'_, AppState>, audio_path: String) -> Res
 }
 
 #[tauri::command]
+async fn get_whisper_model(app: tauri::AppHandle) -> Result<String, String> {
+    let store = app.store("settings.json").map_err(|e| e.to_string())?;
+    let store_value = store.get("whisper_model").and_then(|v| v.as_str().map(String::from));
+    let env_value = std::env::var("WHISPER_MODEL").ok();
+    Ok(resolve_whisper_model(store_value, env_value))
+}
+
+#[tauri::command]
 fn stop_recording(app: tauri::AppHandle, state: State<AppState>) -> Result<String, String> {
     println!("[LCARS] command: stop_recording called");
     state.is_recording.store(false, std::sync::atomic::Ordering::SeqCst);
@@ -284,7 +292,8 @@ fn main() {
             add_transcription,
             start_recording,
             stop_recording,
-            transcribe_audio
+            transcribe_audio,
+            get_whisper_model
         ])
         .setup(move |app| {
             println!("[LCARS] setup: Registering Ctrl+Shift+H hotkey");
