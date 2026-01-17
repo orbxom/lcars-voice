@@ -18,6 +18,12 @@ use tauri::{
 };
 use tauri_plugin_global_shortcut::{Code, GlobalShortcutExt, Modifiers, Shortcut, ShortcutState};
 
+const VALID_WHISPER_MODELS: &[&str] = &["base", "small", "medium", "large"];
+
+fn is_valid_whisper_model(model: &str) -> bool {
+    VALID_WHISPER_MODELS.contains(&model)
+}
+
 struct AppState {
     db: Mutex<Database>,
     recorder: Mutex<Recorder>,
