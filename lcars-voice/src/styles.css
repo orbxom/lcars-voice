@@ -728,6 +728,54 @@ body {
   color: var(--lcars-black);
 }
 
+/* Model Selector */
+.model-selector {
+  position: relative;
+  padding: 0;
+}
+
+.model-btn {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0 16px;
+  height: 100%;
+  border: none;
+  background: var(--lcars-tan);
+  color: var(--lcars-black);
+  font-family: var(--font-display);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 2px;
+  cursor: pointer;
+  transition: background 0.15s ease;
+}
+
+.model-btn:hover {
+  background: var(--lcars-tan-light);
+}
+
+.model-btn.active {
+  background: var(--lcars-orange);
+}
+
+.model-label {
+  opacity: 0.7;
+}
+
+.model-value {
+  font-weight: 700;
+}
+
+.model-arrow {
+  font-size: 10px;
+  transition: transform 0.15s ease;
+}
+
+.model-btn.active .model-arrow {
+  transform: rotate(180deg);
+}
+
 /* ============================================
    ANIMATIONS
    ============================================ */
