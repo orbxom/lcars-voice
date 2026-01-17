@@ -100,6 +100,7 @@ fn main() {
 
     tauri::Builder::default()
         .plugin(tauri_plugin_global_shortcut::Builder::new().build())
+        .plugin(tauri_plugin_clipboard_manager::init())
         .manage(app_state)
         .invoke_handler(tauri::generate_handler![
             get_history,
@@ -117,13 +118,54 @@ fn main() {
                 let was_recording = state.is_recording.load(Ordering::SeqCst);
 
                 if was_recording {
-                    // Stop recording
-                    if let Ok(mut recorder) = state.recorder.lock() {
-                        if let Ok(audio_path) = recorder.stop() {
-                            state.is_recording.store(false, Ordering::SeqCst);
-                            let _ = app.emit("recording-stopped", audio_path.to_string_lossy().to_string());
+                    // Stop recording and transcribe
+                    state.is_recording.store(false, Ordering::SeqCst);
+                    let app_clone = app.clone();
+                    std::thread::spawn(move || {
+                        let state: State<AppState> = app_clone.state();
+
+                        // Stop recording
+                        let audio_path = {
+                            match state.recorder.lock() {
+                                Ok(mut recorder) => recorder.stop(),
+                                Err(e) => {
+                                    let _ = app_clone.emit("transcription-error", format!("Lock error: {}", e));
+                                    return;
+                                }
+                            }
+                        };
+
+                        match audio_path {
+                            Ok(path) => {
+                                let _ = app_clone.emit("transcribing", ());
+
+                                // Transcribe
+                                let result = transcription::transcribe(
+                                    &path,
+                                    &state.model,
+                                    &state.venv_path,
+                                );
+
+                                match result {
+                                    Ok(text) => {
+                                        // Add to history
+                                        if let Ok(db) = state.db.lock() {
+                                            let _ = db.add_transcription(&text, None, &state.model);
+                                        }
+
+                                        // Copy to clipboard (via frontend)
+                                        let _ = app_clone.emit("transcription-complete", text);
+                                    }
+                                    Err(e) => {
+                                        let _ = app_clone.emit("transcription-error", e);
+                                    }
+                                }
+                            }
+                            Err(e) => {
+                                let _ = app_clone.emit("transcription-error", e);
+                            }
                         }
-                    }
+                    });
                 } else {
                     // Start recording
                     if let Ok(mut recorder) = state.recorder.lock() {

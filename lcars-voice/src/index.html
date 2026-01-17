@@ -13,15 +13,34 @@
   <p id="status">Status: Ready</p>
   <script>
     const { listen } = window.__TAURI__.event;
+    const { writeText } = window.__TAURI__.clipboard;
 
     listen('recording-started', () => {
       document.getElementById('status').textContent = 'Status: RECORDING';
       document.getElementById('status').classList.add('recording');
     });
 
-    listen('recording-stopped', () => {
-      document.getElementById('status').textContent = 'Status: Processing...';
+    listen('transcribing', () => {
+      document.getElementById('status').textContent = 'Status: Transcribing...';
       document.getElementById('status').classList.remove('recording');
+    });
+
+    listen('transcription-complete', async (event) => {
+      const text = event.payload;
+      try {
+        await writeText(text);
+        document.getElementById('status').textContent = 'Status: Copied to clipboard!';
+      } catch (e) {
+        document.getElementById('status').textContent = 'Error: Failed to copy to clipboard';
+        console.error('Clipboard error:', e);
+      }
+      setTimeout(() => {
+        document.getElementById('status').textContent = 'Status: Ready';
+      }, 2000);
+    });
+
+    listen('transcription-error', (event) => {
+      document.getElementById('status').textContent = 'Error: ' + event.payload;
     });
   </script>
 </body>
