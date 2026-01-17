@@ -88,10 +88,10 @@ fn start_recording(app: tauri::AppHandle, state: State<AppState>) -> Result<(), 
 }
 
 #[tauri::command]
-async fn transcribe_audio(state: State<'_, AppState>, audio_path: String) -> Result<String, String> {
+async fn transcribe_audio(app: tauri::AppHandle, state: State<'_, AppState>, audio_path: String) -> Result<String, String> {
     let path_str = audio_path.clone();
     let venv = state.venv_path.clone();
-    let model = state.model.clone();
+    let model = get_current_model(&app);
 
     tokio::task::spawn_blocking(move || {
         let path = std::path::Path::new(&path_str);
@@ -120,6 +120,15 @@ async fn set_whisper_model(app: tauri::AppHandle, model: String) -> Result<(), S
     Ok(())
 }
 
+fn get_current_model(app: &tauri::AppHandle) -> String {
+    let store_value = app.store("settings.json")
+        .ok()
+        .and_then(|s| s.get("whisper_model"))
+        .and_then(|v| v.as_str().map(String::from));
+    let env_value = std::env::var("WHISPER_MODEL").ok();
+    resolve_whisper_model(store_value, env_value)
+}
+
 #[tauri::command]
 fn stop_recording(app: tauri::AppHandle, state: State<AppState>) -> Result<String, String> {
     println!("[LCARS] command: stop_recording called");
@@ -136,10 +145,9 @@ fn stop_recording(app: tauri::AppHandle, state: State<AppState>) -> Result<Strin
     let _ = app.emit("transcribing", ());
 
     let venv = state.venv_path.clone();
-    let model = state.model.clone();
+    let model = get_current_model(&app);
     let path_clone = audio_path.clone();
     let app_clone = app.clone();
-    let state_model = state.model.clone();
 
     std::thread::spawn(move || {
         println!("[LCARS] thread: Transcription thread started from command");
@@ -151,7 +159,7 @@ fn stop_recording(app: tauri::AppHandle, state: State<AppState>) -> Result<Strin
                 // Save to database
                 let state: State<AppState> = app_clone.state();
                 if let Ok(db) = state.db.lock() {
-                    let _ = db.add_transcription(&text, None, &state_model);
+                    let _ = db.add_transcription(&text, None, &model);
                     println!("[LCARS] thread: Added transcription to history");
                 }
                 println!("[LCARS] event: Emitting 'transcription-complete' from command");
@@ -238,10 +246,13 @@ fn main() {
                                     println!("[LCARS] event: Emitting 'transcribing'");
                                     let _ = app_clone.emit("transcribing", ());
 
+                                    // Get model from store
+                                    let model = get_current_model(&app_clone);
+
                                     // Transcribe
                                     let result = transcription::transcribe(
                                         &path,
-                                        &state.model,
+                                        &model,
                                         &state.venv_path,
                                     );
 
@@ -250,7 +261,7 @@ fn main() {
                                             println!("[LCARS] thread: Transcription successful, text length = {}", text.len());
                                             // Add to history
                                             if let Ok(db) = state.db.lock() {
-                                                let _ = db.add_transcription(&text, None, &state.model);
+                                                let _ = db.add_transcription(&text, None, &model);
                                                 println!("[LCARS] thread: Added transcription to history");
                                             }
 
@@ -348,11 +359,12 @@ fn main() {
                                 match audio_path {
                                     Ok(path) => {
                                         let _ = app_clone.emit("transcribing", ());
-                                        let result = transcription::transcribe(&path, &state.model, &state.venv_path);
+                                        let model = get_current_model(&app_clone);
+                                        let result = transcription::transcribe(&path, &model, &state.venv_path);
                                         match result {
                                             Ok(text) => {
                                                 if let Ok(db) = state.db.lock() {
-                                                    let _ = db.add_transcription(&text, None, &state.model);
+                                                    let _ = db.add_transcription(&text, None, &model);
                                                 }
                                                 let _ = app_clone.emit("transcription-complete", text);
                                             }
