@@ -28,7 +28,8 @@ impl Recorder {
                 "-f", "S16_LE",
                 "-r", "16000",
                 "-c", "1",
-                self.output_path.to_str().unwrap(),
+                self.output_path.to_str()
+                    .ok_or_else(|| "Output path contains invalid UTF-8".to_string())?,
             ])
             .stdout(Stdio::null())
             .stderr(Stdio::null())
@@ -41,12 +42,9 @@ impl Recorder {
 
     pub fn stop(&mut self) -> Result<PathBuf, String> {
         if let Some(mut child) = self.process.take() {
-            // Send SIGTERM to stop recording gracefully
+            // Send SIGKILL to terminate arecord; wait() ensures process cleanup
             let _ = child.kill();
             let _ = child.wait();
-
-            // Small delay to ensure file is flushed
-            std::thread::sleep(std::time::Duration::from_millis(100));
 
             if self.output_path.exists() {
                 Ok(self.output_path.clone())
@@ -56,9 +54,5 @@ impl Recorder {
         } else {
             Err("Not recording".to_string())
         }
-    }
-
-    pub fn is_recording(&self) -> bool {
-        self.process.is_some()
     }
 }

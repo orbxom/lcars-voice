@@ -89,12 +89,13 @@ fn main() {
             let shortcut = Shortcut::new(Some(Modifiers::SUPER), Code::KeyH);
             app.global_shortcut().on_shortcut(shortcut, move |app, _shortcut, _event| {
                 let state = app.state::<AppState>();
-                let was_recording = state.is_recording.fetch_xor(true, Ordering::SeqCst);
+                let was_recording = state.is_recording.load(Ordering::SeqCst);
 
                 if was_recording {
                     // Stop recording
                     if let Ok(mut recorder) = state.recorder.lock() {
                         if let Ok(audio_path) = recorder.stop() {
+                            state.is_recording.store(false, Ordering::SeqCst);
                             let _ = app.emit("recording-stopped", audio_path.to_string_lossy().to_string());
                         }
                     }
@@ -102,6 +103,7 @@ fn main() {
                     // Start recording
                     if let Ok(mut recorder) = state.recorder.lock() {
                         if recorder.start().is_ok() {
+                            state.is_recording.store(true, Ordering::SeqCst);
                             let _ = app.emit("recording-started", ());
                         }
                     }
