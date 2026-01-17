@@ -60,9 +60,25 @@ class LCARSVoiceInterface {
     document.querySelector('.control-btn.close')?.addEventListener('click', async () => {
       try {
         const appWindow = window.__TAURI__.window.getCurrentWindow();
-        await appWindow.hide();
+        await appWindow.close();
       } catch (e) {
-        console.error('Failed to hide window:', e);
+        console.error('Failed to close window:', e);
+      }
+    });
+
+    // Window dragging - manual implementation for the top bar area
+    document.querySelector('.lcars-top')?.addEventListener('mousedown', async (e) => {
+      // Don't drag if clicking on buttons
+      if (e.target.closest('.control-btn') || e.target.closest('button')) {
+        return;
+      }
+      if (e.buttons === 1) {
+        try {
+          const appWindow = window.__TAURI__.window.getCurrentWindow();
+          await appWindow.startDragging();
+        } catch (e) {
+          console.error('Failed to start dragging:', e);
+        }
       }
     });
   }
@@ -423,7 +439,8 @@ class LCARSVoiceInterface {
 
         const text = item.dataset.text;
         try {
-          const { writeText } = window.__TAURI__.clipboard;
+          const writeText = window.__TAURI__.clipboardManager?.writeText;
+          if (!writeText) throw new Error('Clipboard API not available');
           await writeText(text);
           this.flashStatus('COPIED');
         } catch (e) {

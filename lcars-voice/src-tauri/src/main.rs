@@ -16,7 +16,7 @@ use tauri::{
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
     Emitter, Manager, State,
 };
-use tauri_plugin_global_shortcut::{Code, GlobalShortcutExt, Modifiers, Shortcut};
+use tauri_plugin_global_shortcut::{Code, GlobalShortcutExt, Modifiers, Shortcut, ShortcutState};
 
 struct AppState {
     db: Mutex<Database>,
@@ -112,7 +112,12 @@ fn stop_recording(app: tauri::AppHandle, state: State<AppState>) -> Result<Strin
         match result {
             Ok(text) => {
                 println!("[LCARS] thread: Transcription successful, text length = {}", text.len());
-                // Note: Can't easily access db here, but that's okay for now
+                // Save to database
+                let state: State<AppState> = app_clone.state();
+                if let Ok(db) = state.db.lock() {
+                    let _ = db.add_transcription(&text, None, &state_model);
+                    println!("[LCARS] thread: Added transcription to history");
+                }
                 println!("[LCARS] event: Emitting 'transcription-complete' from command");
                 let _ = app_clone.emit("transcription-complete", text);
             }
@@ -149,8 +154,110 @@ fn main() {
         model,
     };
 
+    let hotkey = Shortcut::new(Some(Modifiers::CONTROL | Modifiers::SHIFT), Code::KeyH);
+    let hotkey_for_handler = hotkey.clone();
+
     tauri::Builder::default()
-        .plugin(tauri_plugin_global_shortcut::Builder::new().build())
+        .plugin(
+            tauri_plugin_global_shortcut::Builder::new()
+                .with_handler(move |app, shortcut, event| {
+                    // Only handle key press, not release
+                    if event.state() != ShortcutState::Pressed {
+                        return;
+                    }
+
+                    if shortcut != &hotkey_for_handler {
+                        return;
+                    }
+
+                    println!("[LCARS] hotkey: Ctrl+Shift+H pressed");
+                    let state = app.state::<AppState>();
+                    let was_recording = state.is_recording.load(Ordering::SeqCst);
+                    println!("[LCARS] hotkey: was_recording = {}", was_recording);
+
+                    if was_recording {
+                        // Stop recording and transcribe
+                        println!("[LCARS] hotkey: Stopping recording and transcribing");
+                        state.is_recording.store(false, Ordering::SeqCst);
+                        println!("[LCARS] state: is_recording set to false");
+                        let app_clone = app.clone();
+                        std::thread::spawn(move || {
+                            println!("[LCARS] thread: Transcription thread started");
+                            let state: State<AppState> = app_clone.state();
+
+                            // Stop recording
+                            let audio_path = {
+                                match state.recorder.lock() {
+                                    Ok(mut recorder) => recorder.stop(),
+                                    Err(e) => {
+                                        let _ = app_clone.emit("transcription-error", format!("Lock error: {}", e));
+                                        return;
+                                    }
+                                }
+                            };
+
+                            match audio_path {
+                                Ok(path) => {
+                                    println!("[LCARS] thread: Audio path = {:?}", path);
+                                    println!("[LCARS] event: Emitting 'transcribing'");
+                                    let _ = app_clone.emit("transcribing", ());
+
+                                    // Transcribe
+                                    let result = transcription::transcribe(
+                                        &path,
+                                        &state.model,
+                                        &state.venv_path,
+                                    );
+
+                                    match result {
+                                        Ok(text) => {
+                                            println!("[LCARS] thread: Transcription successful, text length = {}", text.len());
+                                            // Add to history
+                                            if let Ok(db) = state.db.lock() {
+                                                let _ = db.add_transcription(&text, None, &state.model);
+                                                println!("[LCARS] thread: Added transcription to history");
+                                            }
+
+                                            // Copy to clipboard (via frontend)
+                                            println!("[LCARS] event: Emitting 'transcription-complete'");
+                                            let _ = app_clone.emit("transcription-complete", text);
+                                        }
+                                        Err(e) => {
+                                            println!("[LCARS] thread: Transcription error = {}", e);
+                                            println!("[LCARS] event: Emitting 'transcription-error'");
+                                            let _ = app_clone.emit("transcription-error", e);
+                                        }
+                                    }
+                                }
+                                Err(e) => {
+                                    println!("[LCARS] thread: Stop recording error = {}", e);
+                                    println!("[LCARS] event: Emitting 'transcription-error'");
+                                    let _ = app_clone.emit("transcription-error", e);
+                                }
+                            }
+                        });
+                    } else {
+                        // Start recording
+                        println!("[LCARS] hotkey: Starting recording");
+                        if let Ok(mut recorder) = state.recorder.lock() {
+                            match recorder.start() {
+                                Ok(()) => {
+                                    state.is_recording.store(true, Ordering::SeqCst);
+                                    println!("[LCARS] state: is_recording set to true");
+                                    println!("[LCARS] event: Emitting 'recording-started'");
+                                    let _ = app.emit("recording-started", ());
+                                }
+                                Err(e) => {
+                                    println!("[LCARS] hotkey: Failed to start recording = {}", e);
+                                }
+                            }
+                        } else {
+                            println!("[LCARS] hotkey: Failed to lock recorder");
+                        }
+                    }
+                })
+                .build(),
+        )
         .plugin(tauri_plugin_clipboard_manager::init())
         .manage(app_state)
         .invoke_handler(tauri::generate_handler![
@@ -162,96 +269,8 @@ fn main() {
             transcribe_audio
         ])
         .setup(move |app| {
-            println!("[LCARS] setup: Registering Super+H hotkey");
-            // Register Super+H hotkey
-            let shortcut = Shortcut::new(Some(Modifiers::SUPER), Code::KeyH);
-            match app.global_shortcut().on_shortcut(shortcut, move |app, _shortcut, _event| {
-                println!("[LCARS] hotkey: Super+H pressed");
-                let state = app.state::<AppState>();
-                let was_recording = state.is_recording.load(Ordering::SeqCst);
-                println!("[LCARS] hotkey: was_recording = {}", was_recording);
-
-                if was_recording {
-                    // Stop recording and transcribe
-                    println!("[LCARS] hotkey: Stopping recording and transcribing");
-                    state.is_recording.store(false, Ordering::SeqCst);
-                    println!("[LCARS] state: is_recording set to false");
-                    let app_clone = app.clone();
-                    std::thread::spawn(move || {
-                        println!("[LCARS] thread: Transcription thread started");
-                        let state: State<AppState> = app_clone.state();
-
-                        // Stop recording
-                        let audio_path = {
-                            match state.recorder.lock() {
-                                Ok(mut recorder) => recorder.stop(),
-                                Err(e) => {
-                                    let _ = app_clone.emit("transcription-error", format!("Lock error: {}", e));
-                                    return;
-                                }
-                            }
-                        };
-
-                        match audio_path {
-                            Ok(path) => {
-                                println!("[LCARS] thread: Audio path = {:?}", path);
-                                println!("[LCARS] event: Emitting 'transcribing'");
-                                let _ = app_clone.emit("transcribing", ());
-
-                                // Transcribe
-                                let result = transcription::transcribe(
-                                    &path,
-                                    &state.model,
-                                    &state.venv_path,
-                                );
-
-                                match result {
-                                    Ok(text) => {
-                                        println!("[LCARS] thread: Transcription successful, text length = {}", text.len());
-                                        // Add to history
-                                        if let Ok(db) = state.db.lock() {
-                                            let _ = db.add_transcription(&text, None, &state.model);
-                                            println!("[LCARS] thread: Added transcription to history");
-                                        }
-
-                                        // Copy to clipboard (via frontend)
-                                        println!("[LCARS] event: Emitting 'transcription-complete'");
-                                        let _ = app_clone.emit("transcription-complete", text);
-                                    }
-                                    Err(e) => {
-                                        println!("[LCARS] thread: Transcription error = {}", e);
-                                        println!("[LCARS] event: Emitting 'transcription-error'");
-                                        let _ = app_clone.emit("transcription-error", e);
-                                    }
-                                }
-                            }
-                            Err(e) => {
-                                println!("[LCARS] thread: Stop recording error = {}", e);
-                                println!("[LCARS] event: Emitting 'transcription-error'");
-                                let _ = app_clone.emit("transcription-error", e);
-                            }
-                        }
-                    });
-                } else {
-                    // Start recording
-                    println!("[LCARS] hotkey: Starting recording");
-                    if let Ok(mut recorder) = state.recorder.lock() {
-                        match recorder.start() {
-                            Ok(()) => {
-                                state.is_recording.store(true, Ordering::SeqCst);
-                                println!("[LCARS] state: is_recording set to true");
-                                println!("[LCARS] event: Emitting 'recording-started'");
-                                let _ = app.emit("recording-started", ());
-                            }
-                            Err(e) => {
-                                println!("[LCARS] hotkey: Failed to start recording = {}", e);
-                            }
-                        }
-                    } else {
-                        println!("[LCARS] hotkey: Failed to lock recorder");
-                    }
-                }
-            }) {
+            println!("[LCARS] setup: Registering Ctrl+Shift+H hotkey");
+            match app.global_shortcut().register(hotkey) {
                 Ok(_) => println!("[LCARS] setup: Hotkey registered successfully"),
                 Err(e) => println!("[LCARS] setup: Failed to register hotkey = {:?}", e),
             }
