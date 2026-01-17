@@ -100,6 +100,15 @@ class LCARSVoiceInterface {
         this.closeDropdown();
       }
     });
+
+    // Model option selection
+    this.elements.modelOptions.forEach(opt => {
+      opt.addEventListener('click', (e) => {
+        e.stopPropagation();
+        const model = opt.dataset.model;
+        this.setWhisperModel(model);
+      });
+    });
   }
 
   bindTauriEvents() {
@@ -492,6 +501,20 @@ class LCARSVoiceInterface {
     this.dropdownOpen = false;
     this.elements.modelDropdown.classList.remove('open');
     this.elements.modelBtn.classList.remove('active');
+  }
+
+  async setWhisperModel(model) {
+    try {
+      await window.__TAURI__.core.invoke('set_whisper_model', { model });
+      this.currentModel = model;
+      this.updateModelDisplay();
+      this.closeDropdown();
+      this.flashStatus('MODEL: ' + model.toUpperCase());
+      console.log('[LCARS] app: Set whisper model =', model);
+    } catch (e) {
+      console.error('[LCARS] app: Failed to set whisper model:', e);
+      this.flashStatus('ERROR: ' + e);
+    }
   }
 }
 
