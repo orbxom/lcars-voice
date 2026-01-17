@@ -40,7 +40,6 @@ struct AppState {
     recorder: Mutex<Recorder>,
     is_recording: AtomicBool,
     venv_path: PathBuf,
-    model: String,
 }
 
 #[tauri::command]
@@ -187,15 +186,11 @@ fn main() {
         .join("voice-to-text-env");
     println!("[LCARS] main: venv_path = {:?}", venv_path);
 
-    let model = std::env::var("WHISPER_MODEL").unwrap_or_else(|_| "base".to_string());
-    println!("[LCARS] main: Using whisper model = {}", model);
-
     let app_state = AppState {
         db: Mutex::new(db),
         recorder: Mutex::new(recorder),
         is_recording: AtomicBool::new(false),
         venv_path,
-        model,
     };
 
     let hotkey = Shortcut::new(Some(Modifiers::CONTROL | Modifiers::SHIFT), Code::KeyH);
