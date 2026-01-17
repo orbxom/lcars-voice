@@ -398,4 +398,28 @@ mod tests {
         assert!(!is_valid_whisper_model(""));
         assert!(!is_valid_whisper_model("BASE")); // case sensitive
     }
+
+    #[test]
+    fn test_default_whisper_model() {
+        assert_eq!(get_default_whisper_model(), "base");
+    }
+
+    #[test]
+    fn test_model_fallback_chain() {
+        // When no store value and no env var, should return "base"
+        let model = resolve_whisper_model(None, None);
+        assert_eq!(model, "base");
+
+        // When store has value, use it
+        let model = resolve_whisper_model(Some("medium".to_string()), None);
+        assert_eq!(model, "medium");
+
+        // When store is empty but env var set, use env var
+        let model = resolve_whisper_model(None, Some("large".to_string()));
+        assert_eq!(model, "large");
+
+        // Store takes precedence over env var
+        let model = resolve_whisper_model(Some("small".to_string()), Some("large".to_string()));
+        assert_eq!(model, "small");
+    }
 }
