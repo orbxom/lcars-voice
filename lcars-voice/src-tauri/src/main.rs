@@ -2,9 +2,11 @@
 
 mod database;
 mod recording;
+mod transcription;
 
 use database::{Database, Transcription};
 use recording::Recorder;
+use std::path::PathBuf;
 use std::sync::{
     atomic::{AtomicBool, Ordering},
     Mutex,
@@ -20,6 +22,8 @@ struct AppState {
     db: Mutex<Database>,
     recorder: Mutex<Recorder>,
     is_recording: AtomicBool,
+    venv_path: PathBuf,
+    model: String,
 }
 
 #[tauri::command]
@@ -59,6 +63,20 @@ fn start_recording(state: State<AppState>) -> Result<(), String> {
 }
 
 #[tauri::command]
+async fn transcribe_audio(state: State<'_, AppState>, audio_path: String) -> Result<String, String> {
+    let path_str = audio_path.clone();
+    let venv = state.venv_path.clone();
+    let model = state.model.clone();
+
+    tokio::task::spawn_blocking(move || {
+        let path = std::path::Path::new(&path_str);
+        transcription::transcribe(path, &model, &venv)
+    })
+    .await
+    .map_err(|e| format!("Task join error: {}", e))?
+}
+
+#[tauri::command]
 fn stop_recording(state: State<AppState>) -> Result<String, String> {
     let mut recorder = state.recorder.lock().map_err(|e| e.to_string())?;
     let path = recorder.stop()?;
@@ -68,10 +86,16 @@ fn stop_recording(state: State<AppState>) -> Result<String, String> {
 fn main() {
     let db = Database::new().expect("Failed to initialize database");
     let recorder = Recorder::new();
+    let venv_path = dirs::home_dir()
+        .unwrap_or_else(|| PathBuf::from("."))
+        .join("voice-to-text-env");
+
     let app_state = AppState {
         db: Mutex::new(db),
         recorder: Mutex::new(recorder),
         is_recording: AtomicBool::new(false),
+        venv_path,
+        model: std::env::var("WHISPER_MODEL").unwrap_or_else(|_| "base".to_string()),
     };
 
     tauri::Builder::default()
@@ -82,7 +106,8 @@ fn main() {
             search_history,
             add_transcription,
             start_recording,
-            stop_recording
+            stop_recording,
+            transcribe_audio
         ])
         .setup(move |app| {
             // Register Super+H hotkey

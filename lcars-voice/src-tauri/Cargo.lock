@@ -1807,6 +1807,7 @@ dependencies = [
  "tauri-plugin-clipboard-manager",
  "tauri-plugin-global-shortcut",
  "tauri-plugin-shell",
+ "tokio",
 ]
 
 [[package]]
