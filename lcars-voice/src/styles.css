@@ -253,7 +253,7 @@ body {
 
 /* Sidebar Blocks - Half-pill shape (rounded left, flat right) */
 .sidebar-block {
-  height: 44px;
+  height: 43px;
   width: 100%;
   border-radius: 22px 0 0 22px;
   display: flex;
@@ -352,7 +352,7 @@ body {
   border: 1px solid var(--lcars-blue);
   border-radius: 8px;
   overflow: hidden;
-  height: 90px;
+  height: 53px;
   opacity: 0.9;
 }
 
@@ -530,11 +530,12 @@ body {
   left: 12px;
   color: var(--lcars-purple);
   font-size: 14px;
+  padding-bottom:5px;
 }
 
 .lcars-search {
   width: 100%;
-  padding: 10px 12px 10px 34px;
+  padding: 10px 12px 16px 34px;
   border: 1px solid var(--lcars-purple);
   border-radius: 0 20px 20px 0;
   background: rgba(0, 0, 0, 0.5);
@@ -682,6 +683,14 @@ body {
   flex: 1;
 }
 
+.elbow-bottom-right {
+  width: 24px; /* Match accent strip width */
+  height: 90px; /* Combines bottom strip + footer area */
+  color: var(--lcars-blue);
+  display: block;
+  flex-shrink: 0;
+}
+
 /* ============================================
    FOOTER BAR
    ============================================ */
@@ -689,7 +698,8 @@ body {
   height: var(--footer-height);
   display: flex;
   align-items: stretch;
-  margin-left: 44px; /* Align with sidebar (45px - 1px overlap) */
+  margin-left: 62px; /* Align with sidebar (45px - 1px overlap) */
+  margin-right: -2px; /* Slight overlap with elbow */
   margin-top: calc(-1 * var(--footer-height));
 }
 
@@ -715,13 +725,6 @@ body {
   opacity: 0.4;
 }
 
-.footer-cap {
-  width: var(--accent-width);
-  background: var(--lcars-blue);
-  border-radius: 0 0 var(--bar-curve) 0;
-  flex-shrink: 0;
-}
-
 /* ============================================
    ANIMATIONS
    ============================================ */
@@ -742,6 +745,6 @@ body {
     height: 100vh;
   }
   .history-list {
-    max-height: 100px;
+    max-height: 170px;
   }
 }
