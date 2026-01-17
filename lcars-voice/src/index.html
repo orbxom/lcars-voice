@@ -1,47 +1,151 @@
 <!DOCTYPE html>
-<html>
+<html lang="en">
 <head>
   <meta charset="UTF-8">
-  <title>LCARS Voice</title>
-  <style>
-    body { background: #000; color: #FF9900; font-family: sans-serif; padding: 20px; }
-    .recording { color: #CC4444; }
-  </style>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>LCARS Voice Interface</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Antonio:wght@400;500;600;700&family=Orbitron:wght@400;500;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="styles.css">
 </head>
 <body>
-  <h1>LCARS Voice Interface</h1>
-  <p id="status">Status: Ready</p>
-  <script>
-    const { listen } = window.__TAURI__.event;
-    const { writeText } = window.__TAURI__.clipboard;
+  <div class="lcars-frame">
+    <!-- Top bar with elbow -->
+    <div class="lcars-top">
+      <svg class="elbow-top-left" viewBox="0 0 100 60" preserveAspectRatio="none">
+        <path d="M0,60 L0,30 Q0,0 30,0 L100,0 L100,20 L40,20 Q20,20 20,40 L20,60 Z" fill="currentColor"/>
+      </svg>
+      <div class="top-bar">
+        <div class="top-bar-segment orange"></div>
+        <div class="top-bar-segment purple"></div>
+        <div class="top-bar-segment blue"></div>
+      </div>
+      <div class="title-area">
+        <span class="title">VOICE INTERFACE</span>
+        <span class="stardate">STARDATE <span id="stardate">78945.2</span></span>
+      </div>
+      <div class="window-controls">
+        <button class="control-btn minimize" title="Minimize">&#x25A3;</button>
+        <button class="control-btn close" title="Close">&#x2715;</button>
+      </div>
+      <svg class="elbow-top-right" viewBox="0 0 60 60" preserveAspectRatio="none">
+        <path d="M0,0 L30,0 Q60,0 60,30 L60,60 L40,60 L40,40 Q40,20 20,20 L0,20 Z" fill="currentColor"/>
+      </svg>
+    </div>
 
-    listen('recording-started', () => {
-      document.getElementById('status').textContent = 'Status: RECORDING';
-      document.getElementById('status').classList.add('recording');
-    });
+    <!-- Main content area -->
+    <div class="lcars-content">
+      <!-- Left sidebar -->
+      <div class="sidebar left-sidebar">
+        <div class="sidebar-block orange">
+          <span class="block-number">47</span>
+        </div>
+        <div class="sidebar-block tan">
+          <span class="block-number">215</span>
+        </div>
+        <div class="sidebar-block purple">
+          <span class="block-number">08</span>
+        </div>
+        <div class="sidebar-spacer"></div>
+        <div class="sidebar-block blue">
+          <span class="block-number">1701</span>
+        </div>
+        <div class="sidebar-block orange">
+          <span class="block-number">93</span>
+        </div>
+      </div>
 
-    listen('transcribing', () => {
-      document.getElementById('status').textContent = 'Status: Transcribing...';
-      document.getElementById('status').classList.remove('recording');
-    });
+      <!-- Center content -->
+      <div class="main-content">
+        <!-- Status indicator -->
+        <div class="status-bar">
+          <div class="status-indicator" id="status-indicator">
+            <div class="status-dot"></div>
+            <span class="status-text">READY</span>
+          </div>
+          <div class="audio-level-container">
+            <div class="audio-level" id="audio-level"></div>
+          </div>
+        </div>
 
-    listen('transcription-complete', async (event) => {
-      const text = event.payload;
-      try {
-        await writeText(text);
-        document.getElementById('status').textContent = 'Status: Copied to clipboard!';
-      } catch (e) {
-        document.getElementById('status').textContent = 'Error: Failed to copy to clipboard';
-        console.error('Clipboard error:', e);
-      }
-      setTimeout(() => {
-        document.getElementById('status').textContent = 'Status: Ready';
-      }, 2000);
-    });
+        <!-- Waveform display -->
+        <div class="waveform-container">
+          <canvas id="waveform" width="320" height="80"></canvas>
+          <div class="waveform-overlay">
+            <div class="scan-line"></div>
+          </div>
+          <div class="waveform-grid"></div>
+        </div>
 
-    listen('transcription-error', (event) => {
-      document.getElementById('status').textContent = 'Error: ' + event.payload;
-    });
-  </script>
+        <!-- Record button -->
+        <div class="controls-row">
+          <button class="lcars-button record-btn" id="record-btn">
+            <span class="button-icon">&#x25CF;</span>
+            <span class="button-text">RECORD</span>
+          </button>
+          <div class="hotkey-hint">
+            <span class="key">SUPER</span>+<span class="key">H</span>
+          </div>
+        </div>
+
+        <!-- Divider -->
+        <div class="section-divider">
+          <div class="divider-bar"></div>
+          <span class="divider-label">TRANSCRIPTION LOG</span>
+          <div class="divider-bar"></div>
+        </div>
+
+        <!-- History section -->
+        <div class="history-section">
+          <div class="search-container">
+            <input type="text" class="lcars-search" id="search-input" placeholder="SEARCH RECORDS...">
+            <div class="search-icon">&#x25C8;</div>
+          </div>
+          <div class="history-list" id="history-list">
+            <!-- History items will be rendered dynamically -->
+          </div>
+        </div>
+      </div>
+
+      <!-- Right sidebar -->
+      <div class="sidebar right-sidebar">
+        <div class="sidebar-block tan">
+          <span class="block-number">82</span>
+        </div>
+        <div class="sidebar-block blue">
+          <span class="block-number">417</span>
+        </div>
+        <div class="sidebar-spacer"></div>
+        <div class="sidebar-block purple">
+          <span class="block-number">56</span>
+        </div>
+        <div class="sidebar-block orange">
+          <span class="block-number">2401</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- Bottom bar with elbow -->
+    <div class="lcars-bottom">
+      <svg class="elbow-bottom-left" viewBox="0 0 100 40" preserveAspectRatio="none">
+        <path d="M0,0 L20,0 L20,20 Q20,30 40,30 L100,30 L100,40 L30,40 Q0,40 0,10 Z" fill="currentColor"/>
+      </svg>
+      <div class="bottom-bar">
+        <div class="bottom-bar-segment tan"></div>
+        <div class="bottom-bar-segment purple"></div>
+      </div>
+      <div class="bottom-info">
+        <span class="version">LCARS v2.47</span>
+        <span class="separator">|</span>
+        <span class="model-info">WHISPER: BASE</span>
+      </div>
+      <svg class="elbow-bottom-right" viewBox="0 0 60 40" preserveAspectRatio="none">
+        <path d="M0,30 L20,30 Q40,30 40,10 L40,0 L60,0 L60,10 Q60,40 30,40 L0,40 Z" fill="currentColor"/>
+      </svg>
+    </div>
+  </div>
+
+  <script src="app.js"></script>
 </body>
 </html>
