@@ -368,3 +368,26 @@ fn main() {
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_valid_whisper_models() {
+        // Valid models should be accepted
+        assert!(is_valid_whisper_model("base"));
+        assert!(is_valid_whisper_model("small"));
+        assert!(is_valid_whisper_model("medium"));
+        assert!(is_valid_whisper_model("large"));
+    }
+
+    #[test]
+    fn test_invalid_whisper_models() {
+        // Invalid models should be rejected
+        assert!(!is_valid_whisper_model("tiny"));
+        assert!(!is_valid_whisper_model("xlarge"));
+        assert!(!is_valid_whisper_model(""));
+        assert!(!is_valid_whisper_model("BASE")); // case sensitive
+    }
+}
