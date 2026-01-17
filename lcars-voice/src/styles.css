@@ -683,14 +683,6 @@ body {
   flex: 1;
 }
 
-.elbow-bottom-right {
-  width: 24px; /* Match accent strip width */
-  height: 90px; /* Combines bottom strip + footer area */
-  color: var(--lcars-blue);
-  display: block;
-  flex-shrink: 0;
-}
-
 /* ============================================
    FOOTER BAR
    ============================================ */
