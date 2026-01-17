@@ -16,10 +16,16 @@ class LCARSVoiceInterface {
       historyList: document.getElementById('history-list'),
       searchInput: document.getElementById('search-input'),
       stardate: document.getElementById('stardate'),
+      modelBtn: document.getElementById('model-btn'),
+      modelValue: document.getElementById('model-value'),
+      modelDropdown: document.getElementById('model-dropdown'),
+      modelOptions: document.querySelectorAll('.model-option'),
     };
 
     this.waveformCtx = this.elements.waveform.getContext('2d');
     this.history = [];
+    this.currentModel = 'base';
+    this.dropdownOpen = false;
 
     this.init();
   }
@@ -31,6 +37,7 @@ class LCARSVoiceInterface {
     this.updateStardate();
     await this.loadHistory();
     this.renderHistory();
+    await this.loadCurrentModel();
     this.startIdleWaveform();
 
     // Update stardate every minute
@@ -441,6 +448,24 @@ class LCARSVoiceInterface {
           this.flashStatus('ERROR: CLIPBOARD');
         }
       });
+    });
+  }
+
+  async loadCurrentModel() {
+    try {
+      const model = await window.__TAURI__.core.invoke('get_whisper_model');
+      this.currentModel = model;
+      this.updateModelDisplay();
+      console.log('[LCARS] app: Loaded whisper model =', model);
+    } catch (e) {
+      console.error('[LCARS] app: Failed to load whisper model:', e);
+    }
+  }
+
+  updateModelDisplay() {
+    this.elements.modelValue.textContent = this.currentModel.toUpperCase();
+    this.elements.modelOptions.forEach(opt => {
+      opt.classList.toggle('selected', opt.dataset.model === this.currentModel);
     });
   }
 }
