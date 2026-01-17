@@ -17,6 +17,7 @@ use tauri::{
     Emitter, Manager, State,
 };
 use tauri_plugin_global_shortcut::{Code, GlobalShortcutExt, Modifiers, Shortcut, ShortcutState};
+use tauri_plugin_store::StoreExt;
 
 const VALID_WHISPER_MODELS: &[&str] = &["base", "small", "medium", "large"];
 
@@ -265,6 +266,7 @@ fn main() {
                 .build(),
         )
         .plugin(tauri_plugin_clipboard_manager::init())
+        .plugin(tauri_plugin_store::Builder::default().build())
         .manage(app_state)
         .invoke_handler(tauri::generate_handler![
             get_history,
