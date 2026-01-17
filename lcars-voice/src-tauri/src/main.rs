@@ -275,6 +275,66 @@ fn main() {
                 Err(e) => println!("[LCARS] setup: Failed to register hotkey = {:?}", e),
             }
 
+            // Set up file-based toggle watcher for external control
+            eprintln!("[LCARS] setup: Setting up toggle file watcher");
+            let toggle_file = std::path::PathBuf::from("/tmp/lcars-voice-toggle");
+            // Clean up any existing toggle file
+            let _ = std::fs::remove_file(&toggle_file);
+
+            let app_handle = app.handle().clone();
+            let toggle_path = toggle_file.clone();
+            std::thread::spawn(move || {
+                println!("[LCARS] toggle: Watcher thread started, watching {:?}", toggle_path);
+                loop {
+                    std::thread::sleep(std::time::Duration::from_millis(100));
+                    if toggle_path.exists() {
+                        let _ = std::fs::remove_file(&toggle_path);
+                        println!("[LCARS] toggle: File detected - toggling recording");
+
+                        let state = app_handle.state::<AppState>();
+                        let was_recording = state.is_recording.load(Ordering::SeqCst);
+
+                        if was_recording {
+                            state.is_recording.store(false, Ordering::SeqCst);
+                            let app_clone = app_handle.clone();
+                            std::thread::spawn(move || {
+                                let state: State<AppState> = app_clone.state();
+                                let audio_path = match state.recorder.lock() {
+                                    Ok(mut recorder) => recorder.stop(),
+                                    Err(e) => {
+                                        let _ = app_clone.emit("transcription-error", format!("Lock error: {}", e));
+                                        return;
+                                    }
+                                };
+                                match audio_path {
+                                    Ok(path) => {
+                                        let _ = app_clone.emit("transcribing", ());
+                                        let result = transcription::transcribe(&path, &state.model, &state.venv_path);
+                                        match result {
+                                            Ok(text) => {
+                                                if let Ok(db) = state.db.lock() {
+                                                    let _ = db.add_transcription(&text, None, &state.model);
+                                                }
+                                                let _ = app_clone.emit("transcription-complete", text);
+                                            }
+                                            Err(e) => { let _ = app_clone.emit("transcription-error", e); }
+                                        }
+                                    }
+                                    Err(e) => { let _ = app_clone.emit("transcription-error", e); }
+                                }
+                            });
+                        } else {
+                            if let Ok(mut recorder) = state.recorder.lock() {
+                                if recorder.start().is_ok() {
+                                    state.is_recording.store(true, Ordering::SeqCst);
+                                    let _ = app_handle.emit("recording-started", ());
+                                }
+                            }
+                        }
+                    }
+                }
+            });
+
             // Load tray icons
             let idle_icon = Image::from_path("icons/tray-idle.png")
                 .unwrap_or_else(|_| Image::from_bytes(include_bytes!("../icons/tray-idle.png")).unwrap());

@@ -6,66 +6,79 @@
   <title>LCARS Voice Interface</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=Antonio:wght@400;500;600;700&family=Orbitron:wght@400;500;700&display=swap" rel="stylesheet">
+  <link href="https://fonts.googleapis.com/css2?family=Antonio:wght@400;500;600;700&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="styles.css">
 </head>
 <body>
   <div class="lcars-frame">
-    <!-- Top bar with elbow -->
-    <div class="lcars-top">
-      <svg class="elbow-top-left" viewBox="0 0 100 60" preserveAspectRatio="none">
-        <path d="M0,60 L0,30 Q0,0 30,0 L100,0 L100,20 L40,20 Q20,20 20,40 L20,60 Z" fill="currentColor"/>
+    <!-- Unified LCARS Elbow - Top Left Corner Frame -->
+    <div class="elbow-frame">
+      <svg class="elbow-shape" viewBox="0 0 100 160" preserveAspectRatio="none">
+        <!-- Unified L-shape: rounded outer corner, CONCAVE inner curve (cuts inward) -->
+        <path d="
+          M 25 0
+          L 100 0
+          L 100 36
+          A 50 50 0 0 0 50 86
+          L 50 160
+          L 0 160
+          L 0 25
+          A 25 25 0 0 1 25 0
+          Z
+        " fill="currentColor"/>
       </svg>
-      <div class="top-bar">
-        <div class="top-bar-segment orange"></div>
-        <div class="top-bar-segment purple"></div>
-        <div class="top-bar-segment blue"></div>
-      </div>
-      <div class="title-area" data-tauri-drag-region>
-        <span class="title">VOICE INTERFACE</span>
-        <span class="stardate">STARDATE <span id="stardate">78945.2</span></span>
-      </div>
-      <div class="window-controls">
-        <button class="control-btn minimize" title="Minimize">&#x25A3;</button>
-        <button class="control-btn close" title="Close">&#x2715;</button>
-      </div>
-      <svg class="elbow-top-right" viewBox="0 0 60 60" preserveAspectRatio="none">
-        <path d="M0,0 L30,0 Q60,0 60,30 L60,60 L40,60 L40,40 Q40,20 20,20 L0,20 Z" fill="currentColor"/>
-      </svg>
+      <span class="elbow-number">2005</span>
     </div>
 
-    <!-- Main content area -->
-    <div class="lcars-content">
-      <!-- Left sidebar -->
-      <div class="sidebar left-sidebar">
-        <div class="sidebar-block orange">
-          <span class="block-number">47</span>
+    <!-- Unified Header Bar -->
+    <div class="lcars-header" data-tauri-drag-region>
+      <div class="header-spacer"></div>
+      <div class="header-gap"></div>
+      <div class="header-bar">
+        <div class="header-text-block">
+          <span class="header-title">LCARS VOICE INTERFACE</span>
+          <span class="header-dot">•</span>
+          <span class="header-stardate"><span id="stardate">26017.8</span></span>
         </div>
-        <div class="sidebar-block tan">
-          <span class="block-number">215</span>
-        </div>
-        <div class="sidebar-block purple">
-          <span class="block-number">08</span>
-        </div>
-        <div class="sidebar-spacer"></div>
-        <div class="sidebar-block blue">
-          <span class="block-number">1701</span>
-        </div>
-        <div class="sidebar-block orange">
-          <span class="block-number">93</span>
+        <div class="window-controls">
+          <button class="control-btn minimize" title="Minimize">▢</button>
+          <button class="control-btn close" title="Close">×</button>
         </div>
       </div>
+      <div class="header-gap"></div>
+      <div class="header-cap right"></div>
+    </div>
 
-      <!-- Center content -->
+    <!-- Black gap row -->
+    <div class="lcars-gap-row"></div>
+
+    <!-- Main Content Area with Frame -->
+    <div class="lcars-body">
+      <!-- Left Sidebar -->
+      <div class="lcars-left">
+        <!-- Spacer for elbow area -->
+        <div class="elbow-spacer"></div>
+        <div class="sidebar">
+          <div class="sidebar-block orange"><span class="block-num">47</span></div>
+          <div class="sidebar-block tan"><span class="block-num">215</span></div>
+          <div class="sidebar-block purple"><span class="block-num">08</span></div>
+          <div class="sidebar-spacer"></div>
+          <div class="sidebar-block blue"><span class="block-num">1701</span></div>
+          <div class="sidebar-block orange"><span class="block-num">93</span></div>
+        </div>
+        <!-- Bottom-Left Elbow: Rounded bottom-left corner bar -->
+        <svg class="elbow-bottom-left" viewBox="0 0 45 90" preserveAspectRatio="none">
+          <path d="M0,0 L45,0 L45,90 L22,90 A22,22 0 0,1 0,68 L0,0 Z" fill="currentColor"/>
+        </svg>
+      </div>
+
+      <!-- Main Content -->
       <div class="main-content">
         <!-- Status indicator -->
-        <div class="status-bar">
+        <div class="status-row">
           <div class="status-indicator" id="status-indicator">
             <div class="status-dot"></div>
             <span class="status-text">READY</span>
-          </div>
-          <div class="audio-level-container">
-            <div class="audio-level" id="audio-level"></div>
           </div>
         </div>
 
@@ -75,32 +88,29 @@
           <div class="waveform-overlay">
             <div class="scan-line"></div>
           </div>
-          <div class="waveform-grid"></div>
         </div>
 
         <!-- Record button -->
         <div class="controls-row">
           <button class="lcars-button record-btn" id="record-btn">
-            <span class="button-icon">&#x25CF;</span>
+            <span class="button-icon">●</span>
             <span class="button-text">RECORD</span>
           </button>
           <div class="hotkey-hint">
-            <span class="key">CTRL</span>+<span class="key">SHIFT</span>+<span class="key">H</span>
+            <span class="key">SUPER</span>+<span class="key">ALT</span>+<span class="key">H</span>
           </div>
         </div>
 
         <!-- Divider -->
         <div class="section-divider">
-          <div class="divider-bar"></div>
           <span class="divider-label">TRANSCRIPTION LOG</span>
-          <div class="divider-bar"></div>
         </div>
 
         <!-- History section -->
         <div class="history-section">
           <div class="search-container">
+            <div class="search-icon">◈</div>
             <input type="text" class="lcars-search" id="search-input" placeholder="SEARCH RECORDS...">
-            <div class="search-icon">&#x25C8;</div>
           </div>
           <div class="history-list" id="history-list">
             <!-- History items will be rendered dynamically -->
@@ -108,41 +118,23 @@
         </div>
       </div>
 
-      <!-- Right sidebar -->
-      <div class="sidebar right-sidebar">
-        <div class="sidebar-block tan">
-          <span class="block-number">82</span>
-        </div>
-        <div class="sidebar-block blue">
-          <span class="block-number">417</span>
-        </div>
-        <div class="sidebar-spacer"></div>
-        <div class="sidebar-block purple">
-          <span class="block-number">56</span>
-        </div>
-        <div class="sidebar-block orange">
-          <span class="block-number">2401</span>
-        </div>
+      <!-- Right Accent Strip -->
+      <div class="lcars-right">
+        <div class="accent-strip top"></div>
+        <div class="accent-spacer"></div>
+        <div class="accent-strip mid purple"></div>
+        <div class="accent-strip bottom"></div>
       </div>
     </div>
 
-    <!-- Bottom bar with elbow -->
-    <div class="lcars-bottom">
-      <svg class="elbow-bottom-left" viewBox="0 0 100 40" preserveAspectRatio="none">
-        <path d="M0,0 L20,0 L20,20 Q20,30 40,30 L100,30 L100,40 L30,40 Q0,40 0,10 Z" fill="currentColor"/>
-      </svg>
-      <div class="bottom-bar">
-        <div class="bottom-bar-segment tan"></div>
-        <div class="bottom-bar-segment purple"></div>
+    <!-- Bottom Bar -->
+    <div class="lcars-footer">
+      <div class="footer-bar">
+        <span class="footer-info">LCARS v2.47</span>
+        <span class="footer-sep">│</span>
+        <span class="footer-info">WHISPER: BASE</span>
       </div>
-      <div class="bottom-info">
-        <span class="version">LCARS v2.47</span>
-        <span class="separator">|</span>
-        <span class="model-info">WHISPER: BASE</span>
-      </div>
-      <svg class="elbow-bottom-right" viewBox="0 0 60 40" preserveAspectRatio="none">
-        <path d="M0,30 L20,30 Q40,30 40,10 L40,0 L60,0 L60,10 Q60,40 30,40 L0,40 Z" fill="currentColor"/>
-      </svg>
+      <div class="footer-cap"></div>
     </div>
   </div>
 

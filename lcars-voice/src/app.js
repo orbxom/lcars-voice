@@ -12,7 +12,6 @@ class LCARSVoiceInterface {
       recordBtn: document.getElementById('record-btn'),
       statusIndicator: document.getElementById('status-indicator'),
       statusText: document.querySelector('.status-text'),
-      audioLevel: document.getElementById('audio-level'),
       waveform: document.getElementById('waveform'),
       historyList: document.getElementById('history-list'),
       searchInput: document.getElementById('search-input'),
@@ -66,8 +65,8 @@ class LCARSVoiceInterface {
       }
     });
 
-    // Window dragging - manual implementation for the top bar area
-    document.querySelector('.lcars-top')?.addEventListener('mousedown', async (e) => {
+    // Window dragging - manual implementation for the header area
+    document.querySelector('.lcars-header')?.addEventListener('mousedown', async (e) => {
       // Don't drag if clicking on buttons
       if (e.target.closest('.control-btn') || e.target.closest('button')) {
         return;
@@ -228,7 +227,6 @@ class LCARSVoiceInterface {
       default:
         this.elements.statusText.textContent = 'READY';
         this.elements.recordBtn.querySelector('.button-text').textContent = 'RECORD';
-        this.elements.audioLevel.style.width = '0%';
         break;
     }
   }
@@ -264,11 +262,6 @@ class LCARSVoiceInterface {
         noiseData[i] += (Math.random() - 0.5) * 20;
         noiseData[i] = Math.max(10, Math.min(80, noiseData[i]));
       }
-
-      // Calculate simulated audio level
-      const average = noiseData.reduce((a, b) => a + b, 0) / noiseData.length;
-      const level = Math.min(100, (average / 80) * 100);
-      this.elements.audioLevel.style.width = `${level}%`;
 
       // Draw waveform
       this.drawWaveform(noiseData);
