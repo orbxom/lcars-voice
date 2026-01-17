@@ -1,8 +1,10 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod database;
+mod recording;
 
 use database::{Database, Transcription};
+use recording::Recorder;
 use std::sync::{
     atomic::{AtomicBool, Ordering},
     Mutex,
@@ -16,6 +18,7 @@ use tauri_plugin_global_shortcut::{Code, GlobalShortcutExt, Modifiers, Shortcut}
 
 struct AppState {
     db: Mutex<Database>,
+    recorder: Mutex<Recorder>,
     is_recording: AtomicBool,
 }
 
@@ -49,10 +52,25 @@ fn add_transcription(
         .map_err(|e| e.to_string())
 }
 
+#[tauri::command]
+fn start_recording(state: State<AppState>) -> Result<(), String> {
+    let mut recorder = state.recorder.lock().map_err(|e| e.to_string())?;
+    recorder.start()
+}
+
+#[tauri::command]
+fn stop_recording(state: State<AppState>) -> Result<String, String> {
+    let mut recorder = state.recorder.lock().map_err(|e| e.to_string())?;
+    let path = recorder.stop()?;
+    Ok(path.to_string_lossy().to_string())
+}
+
 fn main() {
     let db = Database::new().expect("Failed to initialize database");
+    let recorder = Recorder::new();
     let app_state = AppState {
         db: Mutex::new(db),
+        recorder: Mutex::new(recorder),
         is_recording: AtomicBool::new(false),
     };
 
@@ -62,22 +80,31 @@ fn main() {
         .invoke_handler(tauri::generate_handler![
             get_history,
             search_history,
-            add_transcription
+            add_transcription,
+            start_recording,
+            stop_recording
         ])
         .setup(move |app| {
-            let app_handle = app.handle().clone();
-
             // Register Super+H hotkey
             let shortcut = Shortcut::new(Some(Modifiers::SUPER), Code::KeyH);
             app.global_shortcut().on_shortcut(shortcut, move |app, _shortcut, _event| {
                 let state = app.state::<AppState>();
                 let was_recording = state.is_recording.fetch_xor(true, Ordering::SeqCst);
+
                 if was_recording {
-                    // Was recording, now stopping
-                    let _ = app_handle.emit("recording-stopped", ());
+                    // Stop recording
+                    if let Ok(mut recorder) = state.recorder.lock() {
+                        if let Ok(audio_path) = recorder.stop() {
+                            let _ = app.emit("recording-stopped", audio_path.to_string_lossy().to_string());
+                        }
+                    }
                 } else {
-                    // Was idle, now starting
-                    let _ = app_handle.emit("recording-started", ());
+                    // Start recording
+                    if let Ok(mut recorder) = state.recorder.lock() {
+                        if recorder.start().is_ok() {
+                            let _ = app.emit("recording-started", ());
+                        }
+                    }
                 }
             })?;
 
