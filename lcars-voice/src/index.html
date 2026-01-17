@@ -123,20 +123,29 @@
         <div class="accent-strip top"></div>
         <div class="accent-spacer"></div>
         <div class="accent-strip mid purple"></div>
-        <!-- Bottom-Right Elbow: connects right strip to footer with rounded corner -->
-        <svg class="elbow-bottom-right" viewBox="0 0 24 90" preserveAspectRatio="none">
-          <path d="M0,0 L24,0 L24,68 A22,22 0 0,0 2,90 L0,90 Z" fill="currentColor"/>
-        </svg>
       </div>
     </div>
 
     <!-- Bottom Bar -->
     <div class="lcars-footer">
-      <div class="footer-bar">
+      <div class="footer-segment version">
         <span class="footer-info">LCARS v2.47</span>
-        <span class="footer-sep">│</span>
-        <span class="footer-info">WHISPER: BASE</span>
       </div>
+      <div class="footer-gap"></div>
+      <div class="footer-segment model-selector" id="model-selector">
+        <button class="model-btn" id="model-btn">
+          <span class="model-label">WHISPER:</span>
+          <span class="model-value" id="model-value">BASE</span>
+          <span class="model-arrow">▾</span>
+        </button>
+        <div class="model-dropdown" id="model-dropdown">
+          <button class="model-option" data-model="base">BASE</button>
+          <button class="model-option" data-model="small">SMALL</button>
+          <button class="model-option" data-model="medium">MEDIUM</button>
+          <button class="model-option" data-model="large">LARGE</button>
+        </div>
+      </div>
+      <div class="footer-gap"></div>
     </div>
   </div>
 
