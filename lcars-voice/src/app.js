@@ -87,6 +87,19 @@ class LCARSVoiceInterface {
         }
       }
     });
+
+    // Model selector dropdown
+    this.elements.modelBtn?.addEventListener('click', (e) => {
+      e.stopPropagation();
+      this.toggleDropdown();
+    });
+
+    // Close dropdown when clicking outside
+    document.addEventListener('click', (e) => {
+      if (!e.target.closest('.model-selector')) {
+        this.closeDropdown();
+      }
+    });
   }
 
   bindTauriEvents() {
@@ -467,6 +480,18 @@ class LCARSVoiceInterface {
     this.elements.modelOptions.forEach(opt => {
       opt.classList.toggle('selected', opt.dataset.model === this.currentModel);
     });
+  }
+
+  toggleDropdown() {
+    this.dropdownOpen = !this.dropdownOpen;
+    this.elements.modelDropdown.classList.toggle('open', this.dropdownOpen);
+    this.elements.modelBtn.classList.toggle('active', this.dropdownOpen);
+  }
+
+  closeDropdown() {
+    this.dropdownOpen = false;
+    this.elements.modelDropdown.classList.remove('open');
+    this.elements.modelBtn.classList.remove('active');
   }
 }
 
