@@ -42,7 +42,7 @@ Frontend (src/)           Backend (src-tauri/src/)       External
 - `copy_to_clipboard`
 - `get_whisper_model`, `set_whisper_model` (uses tauri-plugin-store)
 
-**Global hotkey**: Ctrl+Shift+H toggles recording on/off.
+**Global hotkey**: Super+Alt+H toggles recording on/off. Use `scripts/install-keybinding.sh` to set up Super+H as a system keybinding to launch the app.
 
 ## Key Paths
 

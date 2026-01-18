@@ -20,6 +20,7 @@ class LCARSVoiceInterface {
       modelValue: document.getElementById('model-value'),
       modelDropdown: document.getElementById('model-dropdown'),
       modelOptions: document.querySelectorAll('.model-option'),
+      appVersion: document.getElementById('app-version'),
     };
 
     this.waveformCtx = this.elements.waveform.getContext('2d');
@@ -38,6 +39,7 @@ class LCARSVoiceInterface {
     await this.loadHistory();
     this.renderHistory();
     await this.loadCurrentModel();
+    await this.loadAppVersion();
     this.startIdleWaveform();
 
     // Update stardate every minute
@@ -190,15 +192,21 @@ class LCARSVoiceInterface {
   }
 
   updateStardate() {
-    // Fun stardate calculation (not canon-accurate, just decorative)
     const now = new Date();
-    const year = now.getFullYear();
-    const start = new Date(year, 0, 0);
-    const diff = now - start;
-    const oneDay = 1000 * 60 * 60 * 24;
-    const dayOfYear = Math.floor(diff / oneDay);
-    const stardate = ((year - 2000) * 1000 + dayOfYear + (now.getHours() / 24)).toFixed(1);
-    this.elements.stardate.textContent = stardate;
+    const hours = now.getHours();
+    const minutes = now.getMinutes().toString().padStart(2, '0');
+    const ampm = hours >= 12 ? 'PM' : 'AM';
+    const displayHours = hours % 12 || 12;
+    this.elements.stardate.textContent = `${displayHours}:${minutes} ${ampm}`;
+  }
+
+  async loadAppVersion() {
+    try {
+      const version = await window.__TAURI__.app.getVersion();
+      this.elements.appVersion.textContent = version;
+    } catch (err) {
+      console.error('[LCARS] app: Failed to load app version:', err);
+    }
   }
 
   async toggleRecording() {

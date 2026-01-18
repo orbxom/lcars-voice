@@ -193,7 +193,7 @@ fn main() {
         venv_path,
     };
 
-    let hotkey = Shortcut::new(Some(Modifiers::CONTROL | Modifiers::SHIFT), Code::KeyH);
+    let hotkey = Shortcut::new(Some(Modifiers::SUPER | Modifiers::ALT), Code::KeyH);
     let hotkey_for_handler = hotkey.clone();
 
     tauri::Builder::default()
@@ -209,7 +209,7 @@ fn main() {
                         return;
                     }
 
-                    println!("[LCARS] hotkey: Ctrl+Shift+H pressed");
+                    println!("[LCARS] hotkey: Super+Alt+H pressed");
                     let state = app.state::<AppState>();
                     let was_recording = state.is_recording.load(Ordering::SeqCst);
                     println!("[LCARS] hotkey: was_recording = {}", was_recording);
@@ -313,7 +313,7 @@ fn main() {
             set_whisper_model
         ])
         .setup(move |app| {
-            println!("[LCARS] setup: Registering Ctrl+Shift+H hotkey");
+            println!("[LCARS] setup: Registering Super+Alt+H hotkey");
             match app.global_shortcut().register(hotkey) {
                 Ok(_) => println!("[LCARS] setup: Hotkey registered successfully"),
                 Err(e) => println!("[LCARS] setup: Failed to register hotkey = {:?}", e),
