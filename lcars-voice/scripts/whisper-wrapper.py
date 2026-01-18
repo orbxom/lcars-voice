@@ -14,8 +14,14 @@ def main():
     model_name = sys.argv[2] if len(sys.argv) > 2 else "base"
 
     try:
-        model = whisper.load_model(model_name)
-        result = model.transcribe(audio_path, language="en")
+        # Use CUDA if available for faster transcription
+        import torch
+        device = "cuda" if torch.cuda.is_available() else "cpu"
+        print(f"[WHISPER] Using device: {device}", file=sys.stderr)
+        if device == "cuda":
+            print(f"[WHISPER] GPU: {torch.cuda.get_device_name(0)}", file=sys.stderr)
+        model = whisper.load_model(model_name, device=device)
+        result = model.transcribe(audio_path, language="en", fp16=(device == "cuda"))
         print(json.dumps({
             "text": result["text"].strip(),
             "language": result.get("language", "en")

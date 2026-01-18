@@ -40,6 +40,7 @@ Frontend (src/)           Backend (src-tauri/src/)       External
 - `transcribe_audio`
 - `get_history`, `search_history`
 - `copy_to_clipboard`
+- `get_whisper_model`, `set_whisper_model` (uses tauri-plugin-store)
 
 **Global hotkey**: Ctrl+Shift+H toggles recording on/off.
 
@@ -47,7 +48,8 @@ Frontend (src/)           Backend (src-tauri/src/)       External
 
 - Audio temp file: `/tmp/lcars-voice-recording.wav`
 - History database: `~/.local/share/lcars-voice/history.db`
-- Whisper model controlled by `WHISPER_MODEL` env var (default: `base`)
+- Settings store: `~/.local/share/lcars-voice/settings.json` (whisper model preference)
+- Whisper model: Configurable via UI dropdown (base, small, medium, large). Falls back to `WHISPER_MODEL` env var, then defaults to `base`
 
 ## Frontend Notes
 
@@ -59,3 +61,11 @@ Frontend (src/)           Backend (src-tauri/src/)       External
 ## Linux Dependencies
 
 Requires: `alsa-utils` (for `arecord`), `xclip`, Python 3 with `openai-whisper` package in virtualenv at `~/voice-to-text-env`.
+
+## GPU Acceleration
+
+The Python whisper wrapper (`scripts/whisper-wrapper.py`) automatically uses CUDA if available. Requires PyTorch with CUDA support in the virtualenv.
+
+## Threading Constraints
+
+The Tauri store (tauri-plugin-store) is not thread-safe. Always call `app.store()` from the main thread BEFORE spawning threads, then pass the result to the thread. See `get_current_model()` pattern in `main.rs`.

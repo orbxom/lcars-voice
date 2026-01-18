@@ -220,6 +220,8 @@ fn main() {
                         state.is_recording.store(false, Ordering::SeqCst);
                         println!("[LCARS] state: is_recording set to false");
                         let app_clone = app.clone();
+                        // Get model BEFORE spawning thread (store access must be on main thread)
+                        let model = get_current_model(&app);
                         std::thread::spawn(move || {
                             println!("[LCARS] thread: Transcription thread started");
                             let state: State<AppState> = app_clone.state();
@@ -241,10 +243,7 @@ fn main() {
                                     println!("[LCARS] event: Emitting 'transcribing'");
                                     let _ = app_clone.emit("transcribing", ());
 
-                                    // Get model from store
-                                    let model = get_current_model(&app_clone);
-
-                                    // Transcribe
+                                    // Transcribe (model was captured from main thread)
                                     let result = transcription::transcribe(
                                         &path,
                                         &model,
@@ -342,6 +341,8 @@ fn main() {
                         if was_recording {
                             state.is_recording.store(false, Ordering::SeqCst);
                             let app_clone = app_handle.clone();
+                            // Get model from store before spawning thread
+                            let model = get_current_model(&app_handle);
                             std::thread::spawn(move || {
                                 let state: State<AppState> = app_clone.state();
                                 let audio_path = match state.recorder.lock() {
@@ -354,7 +355,6 @@ fn main() {
                                 match audio_path {
                                     Ok(path) => {
                                         let _ = app_clone.emit("transcribing", ());
-                                        let model = get_current_model(&app_clone);
                                         let result = transcription::transcribe(&path, &model, &state.venv_path);
                                         match result {
                                             Ok(text) => {

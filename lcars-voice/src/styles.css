@@ -724,6 +724,7 @@ body {
 .model-selector {
   position: relative;
   padding: 0;
+  z-index: 100;
 }
 
 .model-btn {
