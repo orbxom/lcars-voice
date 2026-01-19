@@ -60,7 +60,7 @@ Frontend (src/)           Backend (src-tauri/src/)       External
 
 ## Linux Dependencies
 
-Requires: `alsa-utils` (for `arecord`), `xclip`, Python 3 with `openai-whisper` package in virtualenv at `~/voice-to-text-env`.
+Requires: `alsa-utils` (for `arecord`), `xclip`, `libnotify-bin` (for `notify-send`), Python 3 with `openai-whisper` package in virtualenv at `~/voice-to-text-env`.
 
 ## GPU Acceleration
 
@@ -69,3 +69,12 @@ The Python whisper wrapper (`scripts/whisper-wrapper.py`) automatically uses CUD
 ## Threading Constraints
 
 The Tauri store (tauri-plugin-store) is not thread-safe. Always call `app.store()` from the main thread BEFORE spawning threads, then pass the result to the thread. See `get_current_model()` pattern in `main.rs`.
+
+## Desktop Notifications
+
+System notifications are sent for recording events:
+- **Recording started**: "LCARS Voice" / "Recording started"
+- **Transcription complete**: "LCARS Voice" / First ~50 chars of transcribed text
+- **Transcription error**: "LCARS Voice" / "Error: {message}"
+
+Notifications use the `notify-send` command directly rather than the notify-rust library, as the library has D-Bus threading issues when called from Tauri's spawned threads.
