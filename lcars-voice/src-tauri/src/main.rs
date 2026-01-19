@@ -351,6 +351,13 @@ fn main() {
             set_whisper_model
         ])
         .setup(move |app| {
+            // Set window icon
+            if let Some(window) = app.get_webview_window("main") {
+                let icon = Image::from_bytes(include_bytes!("../icons/icon.png"))
+                    .expect("Failed to load window icon");
+                let _ = window.set_icon(icon);
+            }
+
             println!("[LCARS] setup: Registering Super+Alt+H hotkey");
             match app.global_shortcut().register(hotkey) {
                 Ok(_) => println!("[LCARS] setup: Hotkey registered successfully"),
