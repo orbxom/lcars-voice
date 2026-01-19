@@ -1,4 +1,4 @@
-#!/bin/bash
+`#!/bin/bash
 # Voice-to-text script using Whisper
 # Records audio, transcribes with Whisper, copies to clipboard
 
