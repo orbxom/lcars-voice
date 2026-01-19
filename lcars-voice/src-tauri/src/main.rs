@@ -82,6 +82,7 @@ fn start_recording(app: tauri::AppHandle, state: State<AppState>) -> Result<(), 
         state.is_recording.store(true, std::sync::atomic::Ordering::SeqCst);
         println!("[LCARS] event: Emitting 'recording-started' from command");
         let _ = app.emit("recording-started", ());
+        send_notification(&app, "LCARS Voice", "Recording started");
     }
     result
 }
@@ -128,6 +129,26 @@ fn get_current_model(app: &tauri::AppHandle) -> String {
     resolve_whisper_model(store_value, env_value)
 }
 
+fn send_notification(_app: &tauri::AppHandle, title: &str, body: &str) {
+    let title = title.to_string();
+    let body = body.to_string();
+    std::thread::spawn(move || {
+        match std::process::Command::new("notify-send")
+            .arg(&title)
+            .arg(&body)
+            .status()
+        {
+            Ok(status) if status.success() => {
+                println!("[LCARS] notification: Sent '{}' - '{}'", title, body)
+            }
+            Ok(status) => {
+                eprintln!("[LCARS] notification: notify-send failed with status: {}", status)
+            }
+            Err(e) => eprintln!("[LCARS] notification: Failed to run notify-send: {:?}", e),
+        }
+    });
+}
+
 #[tauri::command]
 fn stop_recording(app: tauri::AppHandle, state: State<AppState>) -> Result<String, String> {
     println!("[LCARS] command: stop_recording called");
@@ -162,11 +183,18 @@ fn stop_recording(app: tauri::AppHandle, state: State<AppState>) -> Result<Strin
                     println!("[LCARS] thread: Added transcription to history");
                 }
                 println!("[LCARS] event: Emitting 'transcription-complete' from command");
+                let preview = if text.len() > 50 {
+                    format!("{}...", &text[..50])
+                } else {
+                    text.clone()
+                };
+                send_notification(&app_clone, "LCARS Voice", &preview);
                 let _ = app_clone.emit("transcription-complete", text);
             }
             Err(e) => {
                 println!("[LCARS] thread: Transcription error = {}", e);
                 println!("[LCARS] event: Emitting 'transcription-error' from command");
+                send_notification(&app_clone, "LCARS Voice", &format!("Error: {}", e));
                 let _ = app_clone.emit("transcription-error", e);
             }
         }
@@ -261,11 +289,18 @@ fn main() {
 
                                             // Copy to clipboard (via frontend)
                                             println!("[LCARS] event: Emitting 'transcription-complete'");
+                                            let preview = if text.len() > 50 {
+                                                format!("{}...", &text[..50])
+                                            } else {
+                                                text.clone()
+                                            };
+                                            send_notification(&app_clone, "LCARS Voice", &preview);
                                             let _ = app_clone.emit("transcription-complete", text);
                                         }
                                         Err(e) => {
                                             println!("[LCARS] thread: Transcription error = {}", e);
                                             println!("[LCARS] event: Emitting 'transcription-error'");
+                                            send_notification(&app_clone, "LCARS Voice", &format!("Error: {}", e));
                                             let _ = app_clone.emit("transcription-error", e);
                                         }
                                     }
@@ -273,6 +308,7 @@ fn main() {
                                 Err(e) => {
                                     println!("[LCARS] thread: Stop recording error = {}", e);
                                     println!("[LCARS] event: Emitting 'transcription-error'");
+                                    send_notification(&app_clone, "LCARS Voice", &format!("Error: {}", e));
                                     let _ = app_clone.emit("transcription-error", e);
                                 }
                             }
@@ -287,6 +323,7 @@ fn main() {
                                     println!("[LCARS] state: is_recording set to true");
                                     println!("[LCARS] event: Emitting 'recording-started'");
                                     let _ = app.emit("recording-started", ());
+                                    send_notification(app, "LCARS Voice", "Recording started");
                                 }
                                 Err(e) => {
                                     println!("[LCARS] hotkey: Failed to start recording = {}", e);
@@ -300,6 +337,7 @@ fn main() {
                 .build(),
         )
         .plugin(tauri_plugin_clipboard_manager::init())
+        .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_store::Builder::default().build())
         .manage(app_state)
         .invoke_handler(tauri::generate_handler![
@@ -361,12 +399,24 @@ fn main() {
                                                 if let Ok(db) = state.db.lock() {
                                                     let _ = db.add_transcription(&text, None, &model);
                                                 }
+                                                let preview = if text.len() > 50 {
+                                                    format!("{}...", &text[..50])
+                                                } else {
+                                                    text.clone()
+                                                };
+                                                send_notification(&app_clone, "LCARS Voice", &preview);
                                                 let _ = app_clone.emit("transcription-complete", text);
                                             }
-                                            Err(e) => { let _ = app_clone.emit("transcription-error", e); }
+                                            Err(e) => {
+                                                send_notification(&app_clone, "LCARS Voice", &format!("Error: {}", e));
+                                                let _ = app_clone.emit("transcription-error", e);
+                                            }
                                         }
                                     }
-                                    Err(e) => { let _ = app_clone.emit("transcription-error", e); }
+                                    Err(e) => {
+                                        send_notification(&app_clone, "LCARS Voice", &format!("Error: {}", e));
+                                        let _ = app_clone.emit("transcription-error", e);
+                                    }
                                 }
                             });
                         } else {
@@ -374,6 +424,7 @@ fn main() {
                                 if recorder.start().is_ok() {
                                     state.is_recording.store(true, Ordering::SeqCst);
                                     let _ = app_handle.emit("recording-started", ());
+                                    send_notification(&app_handle, "LCARS Voice", "Recording started");
                                 }
                             }
                         }
