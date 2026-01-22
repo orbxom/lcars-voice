@@ -1,0 +1,28 @@
+services:
+  claude-desktop:
+    build:
+      context: .
+      network: host
+    container_name: claude-playground
+    dns:
+      - 8.8.8.8
+      - 8.8.4.4
+    ports:
+      - "9202:3000"
+    volumes:
+      - ./data/config:/config
+      - ~/.aws:/config/.aws:ro
+    environment:
+      - PUID=1000
+      - PGID=1000
+      - TZ=America/New_York
+    shm_size: "4gb"
+    deploy:
+      resources:
+        limits:
+          cpus: "4"
+          memory: 8G
+        reservations:
+          cpus: "2"
+          memory: 4G
+    restart: unless-stopped

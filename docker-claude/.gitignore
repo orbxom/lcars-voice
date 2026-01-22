@@ -1,0 +1,5 @@
+# Persistent container data (created at runtime)
+data/config/
+
+# Keep the data directory structure
+!data/.gitkeep
