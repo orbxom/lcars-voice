@@ -17,6 +17,10 @@ services:
       - PGID=1000
       - TZ=America/New_York
     shm_size: "4gb"
+    cap_add:
+      - SYS_ADMIN
+    security_opt:
+      - seccomp=unconfined
     deploy:
       resources:
         limits:
