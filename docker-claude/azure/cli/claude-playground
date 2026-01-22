@@ -74,7 +74,44 @@ Examples:
 EOF
 }
 
-# Command implementations will be added in subsequent tasks
+cmd_init() {
+    log_info "Initializing Terraform..."
+    check_prerequisites
+
+    if [[ ! -f "$TERRAFORM_DIR/terraform.tfvars" ]]; then
+        log_warning "terraform.tfvars not found!"
+        log_info "Copy terraform.tfvars.example to terraform.tfvars and fill in your values"
+        exit 1
+    fi
+
+    terraform -chdir="$TERRAFORM_DIR" init
+    log_success "Terraform initialized"
+}
+
+cmd_apply() {
+    log_info "Applying Terraform configuration..."
+    check_prerequisites
+
+    if [[ ! -d "$TERRAFORM_DIR/.terraform" ]]; then
+        log_warning "Terraform not initialized. Running init first..."
+        cmd_init
+    fi
+
+    terraform -chdir="$TERRAFORM_DIR" apply
+    log_success "Infrastructure deployed"
+}
+
+cmd_destroy() {
+    log_warning "This will destroy ALL Azure resources for Claude Playground!"
+    read -p "Are you sure? (yes/no): " confirm
+    if [[ "$confirm" != "yes" ]]; then
+        log_info "Aborted"
+        exit 0
+    fi
+
+    terraform -chdir="$TERRAFORM_DIR" destroy
+    log_success "Infrastructure destroyed"
+}
 
 case "${1:-help}" in
     start)
