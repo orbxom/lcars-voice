@@ -223,6 +223,82 @@ cmd_start() {
     log_info "Open with: $(basename "$0") open $app_name"
 }
 
+cmd_stop() {
+    if [[ $# -lt 1 ]]; then
+        log_error "Usage: $(basename "$0") stop <app-name>"
+        exit 1
+    fi
+
+    local app_name="$1"
+    check_prerequisites
+
+    local resource_group=$(get_tf_output "resource_group_name")
+
+    log_info "Stopping container: $app_name"
+    az containerapp delete \
+        --name "$app_name" \
+        --resource-group "$resource_group" \
+        --yes
+
+    log_success "Container stopped: $app_name"
+}
+
+cmd_list() {
+    check_prerequisites
+
+    local resource_group=$(get_tf_output "resource_group_name")
+
+    if [[ -z "$resource_group" ]]; then
+        log_error "Could not get resource group. Have you run 'apply' yet?"
+        exit 1
+    fi
+
+    log_info "Running instances:"
+    echo ""
+
+    az containerapp list \
+        --resource-group "$resource_group" \
+        --query "[].{Name:name, URL:properties.configuration.ingress.fqdn, Status:properties.runningStatus}" \
+        --output table
+}
+
+cmd_open() {
+    if [[ $# -lt 1 ]]; then
+        log_error "Usage: $(basename "$0") open <app-name>"
+        exit 1
+    fi
+
+    local app_name="$1"
+    check_prerequisites
+
+    local resource_group=$(get_tf_output "resource_group_name")
+
+    local fqdn=$(az containerapp show \
+        --name "$app_name" \
+        --resource-group "$resource_group" \
+        --query "properties.configuration.ingress.fqdn" \
+        --output tsv 2>/dev/null)
+
+    if [[ -z "$fqdn" ]]; then
+        log_error "Container app not found: $app_name"
+        exit 1
+    fi
+
+    local url="https://$fqdn"
+    log_info "Opening: $url"
+
+    # Try different methods to open browser
+    if command -v xdg-open &>/dev/null; then
+        xdg-open "$url"
+    elif command -v open &>/dev/null; then
+        open "$url"
+    elif command -v wslview &>/dev/null; then
+        wslview "$url"
+    else
+        log_warning "Could not open browser. Visit: $url"
+    fi
+}
+
 case "${1:-help}" in
     start)
         shift
