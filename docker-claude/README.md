@@ -1,41 +1,69 @@
 # Docker Claude Code Playground
 
-Browser-accessible Ubuntu desktop with Claude Code pre-installed.
+Browser-accessible Ubuntu XFCE desktop with Claude Code pre-installed. Access via any web browser - no VNC client needed.
 
 ## Quick Start
 
 ```bash
 # Build and start
+docker compose build
 docker compose up -d
-
-# Open in browser
-open http://localhost:9202
 
 # Stop (preserves data)
 docker compose down
+
+# Full reset
+docker compose down -v && rm -rf data/config/*
 ```
+
+## Access
+
+| Location | URL | Notes |
+|----------|-----|-------|
+| Local | `http://localhost:9202` | HTTP works locally |
+| Remote (Tailscale) | `https://<hostname>:9203` | HTTPS required, accept self-signed cert |
+
+## Pre-installed Tools
+
+| Category | Tools |
+|----------|-------|
+| Core | Claude Code, Chrome, VSCode |
+| Node.js | Node.js LTS, npm, pnpm |
+| Python | Python 3, pip |
+| CLI | AWS CLI v2, gh (GitHub), git, curl, wget, jq |
 
 ## First-Time Setup
 
 1. Open terminal in the desktop
 2. Run `aws sso login` to authenticate with AWS
-3. Start using `claude` in any directory
+3. `cd ~/clawd-qa` (or create your own project folder)
+4. Run `claude`
 
-## Pre-installed Tools
+## Persistence
 
-- Claude Code CLI
-- Chrome (for Playwright)
-- VSCode
-- Node.js + npm + pnpm
-- Python 3
-- AWS CLI v2
-- GitHub CLI (gh)
-- git, curl, wget, jq
+Everything in `/config` (the home directory) persists across restarts:
+- Projects and files
+- Claude Code settings (`~/.claude/`, `project/.claude/`)
+- Shell history, dotfiles
+- App configs (VSCode, Chrome)
 
-## Reset Everything
+**Does NOT persist:** System packages installed with `apt`. Add those to the Dockerfile.
 
-```bash
-docker compose down -v
-rm -rf data/config
-docker compose up -d --build
-```
+## Playwright MCP
+
+Works with visible browser (not headless). The container has `SYS_ADMIN` capability and `seccomp=unconfined` to allow Chrome's sandbox.
+
+## Configuration
+
+**Environment:** Edit `data/config/clawd-qa/.claude/settings.local.json`
+
+**Container resources:** Edit `docker-compose.yml` - defaults to 4 CPU / 8GB RAM
+
+**Timezone:** Change `TZ=America/New_York` in `docker-compose.yml`
+
+## Ports
+
+| Host | Container | Purpose |
+|------|-----------|---------|
+| 9202 | 3000 | HTTP (local access) |
+| 9203 | 3001 | HTTPS (remote/Tailscale) |
