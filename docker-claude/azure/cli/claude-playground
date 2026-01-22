@@ -140,6 +140,89 @@ cmd_build_push() {
     log_success "Image pushed: $image_name"
 }
 
+cmd_start() {
+    local user="${default_user:-default}"
+
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --user)
+                user="$2"
+                shift 2
+                ;;
+            *)
+                log_error "Unknown option: $1"
+                exit 1
+                ;;
+        esac
+    done
+
+    log_info "Starting container for user: $user"
+    check_prerequisites
+
+    local resource_group=$(get_tf_output "resource_group_name")
+    local environment_id=$(get_tf_output "environment_id")
+    local storage_name=$(get_tf_output "environment_storage_name")
+    local registry_server=$(get_tf_output "container_registry_server")
+    local registry_username=$(get_tf_output "container_registry_username")
+    local registry_password=$(get_tf_output "container_registry_password")
+    local aad_client_id=$(get_tf_output "aad_client_id")
+    local aad_client_secret=$(get_tf_output "aad_client_secret")
+    local aad_tenant_id=$(get_tf_output "aad_tenant_id")
+
+    if [[ -z "$resource_group" ]]; then
+        log_error "Could not get terraform outputs. Have you run 'apply' yet?"
+        exit 1
+    fi
+
+    # Generate unique app name
+    local suffix=$(date +%s | tail -c 6)
+    local app_name="claude-${user}-${suffix}"
+
+    log_info "Creating container app: $app_name"
+
+    # Create the container app using Azure CLI
+    az containerapp create \
+        --name "$app_name" \
+        --resource-group "$resource_group" \
+        --environment "$environment_id" \
+        --image "$registry_server/claude-playground:latest" \
+        --registry-server "$registry_server" \
+        --registry-username "$registry_username" \
+        --registry-password "$registry_password" \
+        --cpu 2 \
+        --memory 4Gi \
+        --min-replicas 1 \
+        --max-replicas 1 \
+        --ingress external \
+        --target-port 3000 \
+        --env-vars "PUID=1000" "PGID=1000" "TZ=America/New_York" \
+        --query "properties.configuration.ingress.fqdn" \
+        --output tsv
+
+    local fqdn=$(az containerapp show \
+        --name "$app_name" \
+        --resource-group "$resource_group" \
+        --query "properties.configuration.ingress.fqdn" \
+        --output tsv)
+
+    # Configure Azure AD authentication
+    log_info "Configuring Azure AD authentication..."
+    az containerapp auth microsoft update \
+        --name "$app_name" \
+        --resource-group "$resource_group" \
+        --client-id "$aad_client_id" \
+        --client-secret "$aad_client_secret" \
+        --tenant-id "$aad_tenant_id" \
+        --yes 2>/dev/null || true
+
+    log_success "Container started!"
+    echo ""
+    echo "  Name: $app_name"
+    echo "  URL:  https://$fqdn"
+    echo ""
+    log_info "Open with: $(basename "$0") open $app_name"
+}
+
 case "${1:-help}" in
     start)
         shift
