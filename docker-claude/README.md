@@ -67,3 +67,18 @@ Works with visible browser (not headless). The container has `SYS_ADMIN` capabil
 |------|-----------|---------|
 | 9202 | 3000 | HTTP (local access) |
 | 9203 | 3001 | HTTPS (remote/Tailscale) |
+
+## Azure Deployment
+
+For running in Azure (on-demand remote instances), see [azure/README.md](azure/README.md).
+
+Quick start:
+```bash
+az login
+cd azure/terraform && cp terraform.tfvars.example terraform.tfvars
+# Edit terraform.tfvars
+./azure/cli/claude-playground init
+./azure/cli/claude-playground apply
+./azure/cli/claude-playground build-push
+./azure/cli/claude-playground start
+```
