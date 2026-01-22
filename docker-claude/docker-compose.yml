@@ -9,6 +9,7 @@ services:
       - 8.8.4.4
     ports:
       - "9202:3000"
+      - "9203:3001"
     volumes:
       - ./data/config:/config
       - ~/.aws:/config/.aws:ro
