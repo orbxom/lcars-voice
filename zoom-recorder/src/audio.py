@@ -8,12 +8,24 @@ def detect_sources() -> dict:
 
     Returns:
         dict with 'mic' and 'monitor' keys, values are source names or None
+
+    Raises:
+        RuntimeError: If pactl is not installed, times out, or fails
     """
-    result = subprocess.run(
-        ['pactl', 'list', 'sources', 'short'],
-        capture_output=True,
-        text=True
-    )
+    try:
+        result = subprocess.run(
+            ['pactl', 'list', 'sources', 'short'],
+            capture_output=True,
+            text=True,
+            timeout=5
+        )
+    except FileNotFoundError:
+        raise RuntimeError("pactl not found. Please install pulseaudio-utils or pipewire-pulse.")
+    except subprocess.TimeoutExpired:
+        raise RuntimeError("pactl command timed out after 5 seconds.")
+
+    if result.returncode != 0:
+        raise RuntimeError(f"pactl failed with exit code {result.returncode}: {result.stderr}")
 
     mic = None
     monitor = None
