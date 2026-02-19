@@ -89,3 +89,59 @@ def test_recorder_stop_uses_kill_on_timeout():
 
             mock_process.terminate.assert_called_once()
             mock_process.kill.assert_called_once()
+
+
+def test_recorder_start_raises_when_ffmpeg_fails():
+    """Test that start() raises RuntimeError if FFmpeg exits immediately."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        with patch('subprocess.Popen') as mock_popen, \
+             patch('time.sleep'):
+            mock_process = MagicMock()
+            mock_process.poll.return_value = 1  # Already exited
+            mock_popen.return_value = mock_process
+
+            from src.recorder import Recorder
+            recorder = Recorder(
+                output_base=tmpdir,
+                mic_source='test_mic',
+                monitor_source='test_monitor'
+            )
+
+            import pytest
+            with pytest.raises(RuntimeError, match="FFmpeg failed to start"):
+                recorder.start()
+
+
+def test_recorder_start_raises_when_already_recording():
+    """Test that start() raises RuntimeError if already recording."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        with patch('subprocess.Popen') as mock_popen:
+            mock_process = MagicMock()
+            mock_process.poll.return_value = None
+            mock_popen.return_value = mock_process
+
+            from src.recorder import Recorder
+            recorder = Recorder(
+                output_base=tmpdir,
+                mic_source='test_mic',
+                monitor_source='test_monitor'
+            )
+            recorder.start()
+
+            import pytest
+            with pytest.raises(RuntimeError, match="Already recording"):
+                recorder.start()
+
+            recorder.stop()
+
+
+def test_recorder_stop_without_start():
+    """Test that stop() is a no-op when not recording."""
+    from src.recorder import Recorder
+    recorder = Recorder(
+        output_base='/tmp',
+        mic_source='test_mic',
+        monitor_source='test_monitor'
+    )
+    # Should not raise
+    recorder.stop()

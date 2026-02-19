@@ -37,8 +37,13 @@ class Recorder:
         # Create timestamped output directory
         self._start_time = datetime.now()
         dirname = self._start_time.strftime("%Y-%m-%d-%H%M%S")
-        self._output_dir = os.path.join(self.output_base, dirname)
-        os.makedirs(self._output_dir, exist_ok=True)
+        base_dir = os.path.join(self.output_base, dirname)
+        self._output_dir = base_dir
+        counter = 1
+        while os.path.exists(self._output_dir):
+            self._output_dir = f"{base_dir}-{counter}"
+            counter += 1
+        os.makedirs(self._output_dir)
 
         audio_path = os.path.join(self._output_dir, "audio.wav")
 
