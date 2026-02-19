@@ -1,5 +1,16 @@
-# Rust/Cargo build artifacts
+# Build artifacts
 target/
-
-# Generated files
 *.log
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Editor files
+*.swp
+*.swo
+.vscode/
+.idea/
+
+# Tauri generated schemas
+src-tauri/gen/
