@@ -53,7 +53,11 @@ class LCARSVoiceInterface {
       console.log('[LCARS] app: Record button clicked');
       this.toggleRecording();
     });
-    this.elements.searchInput.addEventListener('input', (e) => this.filterHistory(e.target.value));
+    let searchTimeout;
+    this.elements.searchInput.addEventListener('input', (e) => {
+      clearTimeout(searchTimeout);
+      searchTimeout = setTimeout(() => this.filterHistory(e.target.value), 200);
+    });
 
     // Window controls for Tauri
     document.querySelector('.control-btn.minimize')?.addEventListener('click', async () => {
@@ -84,9 +88,25 @@ class LCARSVoiceInterface {
         try {
           const appWindow = window.__TAURI__.window.getCurrentWindow();
           await appWindow.startDragging();
-        } catch (e) {
-          console.error('Failed to start dragging:', e);
+        } catch (err) {
+          console.error('Failed to start dragging:', err);
         }
+      }
+    });
+
+    // Event delegation for history list copy buttons
+    this.elements.historyList.addEventListener('click', async (e) => {
+      const copyBtn = e.target.closest('.copy-btn');
+      if (!copyBtn) return;
+      const historyItem = copyBtn.closest('.history-item');
+      if (!historyItem) return;
+      const text = historyItem.dataset.text;
+      try {
+        await this.copyToClipboard(text);
+        this.flashStatus('COPIED');
+      } catch (err) {
+        console.error('Failed to copy to clipboard:', err);
+        this.flashStatus('ERROR: CLIPBOARD');
       }
     });
 
@@ -145,26 +165,8 @@ class LCARSVoiceInterface {
       console.log('[LCARS] event: Transcription text =', JSON.stringify(text));
       console.log('[LCARS] event: Transcription text length =', text ? text.length : 'null/undefined');
 
-      // Copy to clipboard via Tauri
       try {
-        console.log('[LCARS] app: Copying to clipboard, text =', JSON.stringify(text));
-        console.log('[LCARS] app: window.__TAURI__ keys =', Object.keys(window.__TAURI__ || {}));
-
-        // Try different clipboard API paths for Tauri 2.x
-        let writeText;
-        if (window.__TAURI__?.clipboard?.writeText) {
-          console.log('[LCARS] app: Using window.__TAURI__.clipboard.writeText');
-          writeText = window.__TAURI__.clipboard.writeText;
-        } else if (window.__TAURI__?.clipboardManager?.writeText) {
-          console.log('[LCARS] app: Using window.__TAURI__.clipboardManager.writeText');
-          writeText = window.__TAURI__.clipboardManager.writeText;
-        } else {
-          console.error('[LCARS] app: No clipboard API found!');
-          console.log('[LCARS] app: __TAURI__ structure:', JSON.stringify(Object.keys(window.__TAURI__ || {})));
-          throw new Error('Clipboard API not found');
-        }
-
-        await writeText(text);
+        await this.copyToClipboard(text);
         console.log('[LCARS] app: Copied to clipboard successfully');
       } catch (e) {
         console.error('[LCARS] app: Failed to copy to clipboard:', e);
@@ -266,6 +268,14 @@ class LCARSVoiceInterface {
         this.elements.recordBtn.querySelector('.button-text').textContent = 'RECORD';
         break;
     }
+  }
+
+  async copyToClipboard(text) {
+    const writeText =
+      window.__TAURI__?.clipboard?.writeText ??
+      window.__TAURI__?.clipboardManager?.writeText;
+    if (!writeText) throw new Error('Clipboard API not available');
+    await writeText(text);
   }
 
   flashStatus(message) {
@@ -461,24 +471,6 @@ class LCARSVoiceInterface {
         </div>
       `;
     }).join('');
-
-    // Bind copy buttons
-    this.elements.historyList.querySelectorAll('.history-item').forEach(item => {
-      item.addEventListener('click', async (e) => {
-        if (!e.target.classList.contains('copy-btn')) return;
-
-        const text = item.dataset.text;
-        try {
-          const writeText = window.__TAURI__.clipboardManager?.writeText;
-          if (!writeText) throw new Error('Clipboard API not available');
-          await writeText(text);
-          this.flashStatus('COPIED');
-        } catch (e) {
-          console.error('Failed to copy to clipboard:', e);
-          this.flashStatus('ERROR: CLIPBOARD');
-        }
-      });
-    });
   }
 
   async loadCurrentModel() {

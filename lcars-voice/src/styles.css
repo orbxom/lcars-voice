@@ -683,11 +683,6 @@ body {
   background: var(--lcars-purple);
 }
 
-.accent-strip.bottom {
-  height: 70px;
-  background: var(--lcars-blue);
-}
-
 .accent-spacer {
   flex: 1;
 }

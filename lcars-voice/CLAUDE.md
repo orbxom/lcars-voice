@@ -36,10 +36,9 @@ Frontend (src/)           Backend (src-tauri/src/)       External
 **Data flow**: User triggers recording → Rust spawns `arecord` → User stops → Rust calls Python Whisper wrapper → Result returned to frontend → Copied to clipboard + saved to SQLite history.
 
 **Key IPC commands** (defined in `main.rs`, called via `window.__TAURI__.core.invoke()`):
-- `start_recording`, `stop_recording`, `cancel_recording`
+- `start_recording`, `stop_recording`
 - `transcribe_audio`
-- `get_history`, `search_history`
-- `copy_to_clipboard`
+- `get_history`, `search_history`, `add_transcription`
 - `get_whisper_model`, `set_whisper_model` (uses tauri-plugin-store)
 
 **Global hotkey**: Super+Alt+H toggles recording on/off. Use `scripts/install-keybinding.sh` to set up Super+H as a system keybinding to launch the app.

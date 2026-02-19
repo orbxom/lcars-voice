@@ -1,3 +1,5 @@
+//! SQLite storage for transcription history.
+
 use rusqlite::{params, Connection, Result};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
@@ -102,5 +104,93 @@ impl Database {
         })?;
 
         rows.collect()
+    }
+}
+
+#[cfg(test)]
+impl Database {
+    pub fn new_in_memory() -> Result<Self> {
+        let conn = Connection::open_in_memory()?;
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS transcriptions (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                text TEXT NOT NULL,
+                timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
+                duration_ms INTEGER,
+                model TEXT DEFAULT 'base'
+            )",
+            [],
+        )?;
+        Ok(Self { conn })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_add_and_get_transcription() {
+        let db = Database::new_in_memory().unwrap();
+        let id = db.add_transcription("hello world", None, "base").unwrap();
+        assert!(id > 0);
+        let history = db.get_history(10).unwrap();
+        assert_eq!(history.len(), 1);
+        assert_eq!(history[0].text, "hello world");
+        assert_eq!(history[0].model, "base");
+    }
+
+    #[test]
+    fn test_get_history_ordering() {
+        let db = Database::new_in_memory().unwrap();
+        db.add_transcription("first", None, "base").unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(1100));
+        db.add_transcription("second", None, "base").unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(1100));
+        db.add_transcription("third", None, "base").unwrap();
+        let history = db.get_history(10).unwrap();
+        // Most recent should be first (DESC order)
+        assert_eq!(history[0].text, "third");
+        assert_eq!(history[2].text, "first");
+    }
+
+    #[test]
+    fn test_get_history_limit() {
+        let db = Database::new_in_memory().unwrap();
+        for i in 0..5 {
+            db.add_transcription(&format!("item {}", i), None, "base")
+                .unwrap();
+        }
+        let history = db.get_history(3).unwrap();
+        assert_eq!(history.len(), 3);
+    }
+
+    #[test]
+    fn test_search_matching() {
+        let db = Database::new_in_memory().unwrap();
+        db.add_transcription("the quick brown fox", None, "base")
+            .unwrap();
+        db.add_transcription("lazy dog", None, "base").unwrap();
+        db.add_transcription("quick silver", None, "base").unwrap();
+        let results = db.search("quick", 10).unwrap();
+        assert_eq!(results.len(), 2);
+    }
+
+    #[test]
+    fn test_search_no_results() {
+        let db = Database::new_in_memory().unwrap();
+        db.add_transcription("hello world", None, "base").unwrap();
+        let results = db.search("nonexistent", 10).unwrap();
+        assert_eq!(results.len(), 0);
+    }
+
+    #[test]
+    fn test_add_with_duration_and_model() {
+        let db = Database::new_in_memory().unwrap();
+        db.add_transcription("test text", Some(5000), "medium")
+            .unwrap();
+        let history = db.get_history(1).unwrap();
+        assert_eq!(history[0].duration_ms, Some(5000));
+        assert_eq!(history[0].model, "medium");
     }
 }
