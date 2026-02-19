@@ -1,0 +1,18 @@
+# Recordings and generated content
+recordings/*.mp4
+recordings/*.md
+!recordings/RecordingIndex.md
+recordings/attachments/
+
+# Environment config (contains credentials)
+.env
+
+# Python
+__pycache__/
+*.pyc
+
+# Session diary (learning log, not operational)
+DIARY.md
+
+# Generated analysis files
+*-Analysis.md
