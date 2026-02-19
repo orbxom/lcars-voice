@@ -1,6 +1,6 @@
 # Meeting Transcripts
 
-Automated pipeline to download meeting recordings from S3, transcribe them with Whisper, and enrich with JIRA information.
+Automated pipeline to transcribe Zoom meeting recordings and enrich with JIRA information. Works with local recordings from the [zoom-recorder](../zoom-recorder/) tool.
 
 ## Quick Start
 
@@ -9,17 +9,21 @@ Automated pipeline to download meeting recordings from S3, transcribe them with 
 cp .env.example .env
 # Edit .env with your credentials
 
-# Process recordings for a date
-./process-recordings.sh 01-29-2026
+# Process today's recordings
+./process-recordings.sh
+
+# Process a specific date
+./process-recordings.sh 2026-02-19
 ```
 
 ## Setup
 
 ### Prerequisites
 
-- AWS CLI configured with SSO access
-- Python virtualenv with Whisper at `~/voice-to-text-env`
+- Python virtualenv with Whisper at `~/voice-to-text-env` (or set `PYTHON_ENV` in `.env`)
+- FFmpeg
 - JIRA API token
+- [zoom-recorder](../zoom-recorder/) producing recordings in `~/zoom-recordings/`
 
 ### Configuration
 
@@ -31,84 +35,76 @@ JIRA_URL=https://yourcompany.atlassian.net
 JIRA_USER=your.email@company.com
 JIRA_TOKEN=your-api-token
 
-# AWS
-AWS_PROFILE=sandbox
-S3_BUCKET=growth-recordings
-
-# Whisper (optional, defaults to large-v3)
+# Whisper
 WHISPER_MODEL=large-v3
+
+# Paths (optional, these are the defaults)
+RECORDINGS_SOURCE=~/zoom-recordings
+PYTHON_ENV=~/voice-to-text-env/bin/python
 ```
 
-## Usage
+## Workflow
 
-### Full Pipeline
+1. **During meetings:** Use [zoom-recorder](../zoom-recorder/) to record Zoom calls, marking JIRA tickets as topics come up
+2. **End of day:** Run the pipeline to transcribe and enrich
 
 ```bash
-# Simple - uses date folder and defaults from .env
-./process-recordings.sh 01-29-2026
+# Full pipeline (transcribe + segment + JIRA enrich)
+./process-recordings.sh 2026-02-19
 
-# Custom output folder
-./process-recordings.sh 01-29-2026 ./output
-
-# Full control
-./process-recordings.sh s3://bucket/path ./output aws-profile
+# Or step by step
+./process-local-recordings.sh 2026-02-19       # Transcribe and segment by ticket
+./fetch-jira-info.sh ./recordings               # Enrich with JIRA metadata
 ```
 
-### Individual Scripts
+3. **Analysis:** Use the `analyzing-meeting-transcripts` Claude skill on individual `.md` files to generate deep technical analysis reports
 
-```bash
-# Download only
-./download-recordings.sh s3://bucket/01-29-2026 ./recordings sandbox
+## How It Works
 
-# Transcribe only (requires RecordingIndex.md in folder)
-./transcribe-all.sh ./recordings
-
-# Fetch JIRA only (requires transcripts already created)
-./fetch-jira-info.sh ./recordings
-```
-
-## S3 Folder Structure
-
-Each date folder in S3 should contain:
+The pipeline processes zoom-recorder output directories from `~/zoom-recordings/`:
 
 ```
-01-29-2026/
-├── RecordingIndex.md      # Maps recordings to JIRA IDs
-├── 2026-01-29 10-20-14.mp4
-├── 2026-01-29 10-29-58.mp4
-└── ...
+~/zoom-recordings/
+├── 2026-02-19-093015/          <- One recording session
+│   ├── audio.wav               <- 16kHz mono WAV
+│   ├── timestamps.json         <- JIRA ticket marks with time positions
+│   └── metadata.json           <- Recording metadata
+└── 2026-02-19-140022/          <- Another session
+    ├── audio.wav
+    ├── timestamps.json
+    └── metadata.json
 ```
 
-### RecordingIndex.md Format
-
-One JIRA ID per line, in timestamp order. Multiple JIRAs for same recording joined with dashes:
-
-```markdown
-# Recording Index
-GT-9516
-GT-9438
-GT-9544
-GT-9523-GT-9524
-GT-9528
-GT-9525
-GT-9522-GT-9556-GT-9555
-```
+For each recording:
+1. Whisper transcribes `audio.wav` into text segments with timestamps
+2. Segments are matched to JIRA tickets using `timestamps.json` marks
+3. Per-ticket `.md` files are written (e.g., `GT-9516.md`)
+4. JIRA metadata (summary, status, subtasks, comments, attachments) is appended
 
 ## Output
 
-After processing, each recording becomes:
+After processing, the `recordings/` directory contains:
 
-- `GT-XXXX.mp4` - Renamed video file
-- `GT-XXXX.md` - Transcript + JIRA information
+- `GT-XXXX.md` - Transcript segment + JIRA information
+- `attachments/<jira-id>/` - Downloaded JIRA image attachments
 
-JIRA attachments are downloaded to `recordings/attachments/<jira-id>/`.
+If the same ticket is discussed in multiple recording sessions, the transcript segments are appended to the same `.md` file.
 
 ## Scripts
 
 | Script | Purpose |
 |--------|---------|
 | `process-recordings.sh` | Master orchestrator - runs all steps |
-| `download-recordings.sh` | Downloads from S3 (idempotent) |
-| `transcribe-all.sh` | Whisper transcription + rename |
+| `process-local-recordings.sh` | Finds recordings by date, transcribes, segments by ticket |
 | `fetch-jira-info.sh` | JIRA API enrichment |
+| `segment-transcript.py` | Splits whisper output by JIRA timestamp marks |
 | `whisper-wrapper.py` | Python wrapper for Whisper |
+
+### Legacy Scripts
+
+These scripts are from the original S3-based pipeline and are no longer used:
+
+| Script | Purpose |
+|--------|---------|
+| `download-recordings.sh` | Downloaded recordings from S3 |
+| `transcribe-all.sh` | Transcribed using RecordingIndex.md mapping |

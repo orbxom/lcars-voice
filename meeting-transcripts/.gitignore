@@ -1,6 +1,8 @@
 # Recordings and generated content
 recordings/*.mp4
+recordings/*.wav
 recordings/*.md
+recordings/*.json
 !recordings/RecordingIndex.md
 recordings/attachments/
 
