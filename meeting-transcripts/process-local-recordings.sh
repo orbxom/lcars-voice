@@ -86,11 +86,11 @@ for recording_dir in "${matching_dirs[@]}"; do
     echo "  Transcribing with whisper ($WHISPER_MODEL)..."
     whisper_output_file=$(mktemp /tmp/whisper-output-XXXXXX.json)
 
-    result=$("$PYTHON_ENV" "$WHISPER_SCRIPT" "$audio_file" "$WHISPER_MODEL" 2>&1)
-    json_output=$(echo "$result" | grep '^{' | tail -1)
+    whisper_log="$recording_dir/whisper.log"
+    json_output=$("$PYTHON_ENV" "$WHISPER_SCRIPT" "$audio_file" "$WHISPER_MODEL" 2>"$whisper_log") || true
 
     if [[ -z "$json_output" ]]; then
-        echo "  Error: No JSON output from whisper" >&2
+        echo "  Error: No JSON output from whisper (see $whisper_log)" >&2
         rm -f "$whisper_output_file"
         continue
     fi
@@ -102,7 +102,7 @@ for recording_dir in "${matching_dirs[@]}"; do
 
     # Segment transcript by JIRA ticket marks
     echo "  Segmenting by ticket marks..."
-    python3 "$SEGMENT_SCRIPT" \
+    "$PYTHON_ENV" "$SEGMENT_SCRIPT" \
         "$whisper_output_file" \
         "$timestamps_file" \
         "$OUTPUT_DIR" \

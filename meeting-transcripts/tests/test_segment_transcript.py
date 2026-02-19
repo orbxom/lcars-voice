@@ -106,7 +106,7 @@ def test_segment_by_tickets_marks_without_tickets():
         {"time": "00:00:00", "seconds": 0, "ticket": None, "note": None},
     ]
 
-    result = mod.segment_by_tickets(segments, [])
+    result = mod.segment_by_tickets(segments, marks)
 
     assert len(result) == 1
     assert result[0]["ticket"] is None
