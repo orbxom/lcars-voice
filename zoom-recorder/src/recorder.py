@@ -2,6 +2,7 @@
 
 import os
 import subprocess
+import time
 from datetime import datetime
 
 
@@ -60,6 +61,11 @@ class Recorder:
             stderr=subprocess.DEVNULL
         )
 
+        # Check that FFmpeg actually started
+        time.sleep(0.1)
+        if self._process.poll() is not None:
+            raise RuntimeError("FFmpeg failed to start")
+
         return self._output_dir
 
     def stop(self) -> None:
@@ -69,6 +75,10 @@ class Recorder:
 
         if self._process.poll() is None:
             self._process.terminate()
-            self._process.wait(timeout=5)
+            try:
+                self._process.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                self._process.kill()
+                self._process.wait()
 
         self._process = None
