@@ -87,18 +87,24 @@ class ZoomRecorderApp:
     def _toggle_recording(self):
         """Start or stop recording."""
         if self.recorder and self.recorder.is_recording:
-            self._stop_recording()
+            if messagebox.askyesno("Stop Recording", "Stop recording and save?"):
+                self._stop_recording()
         else:
             self._start_recording()
 
     def _start_recording(self):
         """Start a new recording session."""
-        self.recorder = Recorder(
-            output_base=self.output_base,
-            mic_source=self.mic_source,
-            monitor_source=self.monitor_source
-        )
-        self.recorder.start()
+        try:
+            self.recorder = Recorder(
+                output_base=self.output_base,
+                mic_source=self.mic_source,
+                monitor_source=self.monitor_source
+            )
+            self.recorder.start()
+        except Exception as e:
+            messagebox.showerror("Error", f"Failed to start recording:\n{e}")
+            return
+
         self.timestamp_mgr = TimestampManager(self.recorder.start_time)
 
         self.record_btn.configure(text="Stop Recording")
@@ -114,24 +120,26 @@ class ZoomRecorderApp:
             self.root.after_cancel(self._timer_id)
             self._timer_id = None
 
-        end_time = datetime.now()
-        self.recorder.stop()
+        try:
+            end_time = datetime.now()
+            self.recorder.stop()
 
-        # Save timestamps and metadata
-        output_dir = self.recorder.output_dir
-        self.timestamp_mgr.save(os.path.join(output_dir, "timestamps.json"))
-        write_metadata(
-            os.path.join(output_dir, "metadata.json"),
-            self.recorder.start_time,
-            end_time
-        )
-
-        self.record_btn.configure(text="Start Recording")
-        self.mark_btn.configure(state=tk.DISABLED)
-        self.rec_indicator.configure(text="")
-        self.timer_label.configure(text="00:00:00")
-
-        messagebox.showinfo("Recording Saved", f"Saved to:\n{output_dir}")
+            # Save timestamps and metadata
+            output_dir = self.recorder.output_dir
+            self.timestamp_mgr.save(os.path.join(output_dir, "timestamps.json"))
+            write_metadata(
+                os.path.join(output_dir, "metadata.json"),
+                self.recorder.start_time,
+                end_time
+            )
+            messagebox.showinfo("Recording Saved", f"Saved to:\n{output_dir}")
+        except Exception as e:
+            messagebox.showerror("Error", f"Error saving recording:\n{e}")
+        finally:
+            self.record_btn.configure(text="Start Recording")
+            self.mark_btn.configure(state=tk.DISABLED)
+            self.rec_indicator.configure(text="")
+            self.timer_label.configure(text="00:00:00")
 
     def _mark_timestamp(self):
         """Mark current timestamp with optional JIRA ticket."""
