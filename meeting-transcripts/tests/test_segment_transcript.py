@@ -177,3 +177,72 @@ def test_write_transcript_md_appends():
         assert "Second session content." in content
         assert "session2/audio.wav" in content
         assert content.count("---") >= 3  # separators
+
+
+def test_segment_by_tickets_with_speakers():
+    """Test segmentation with speaker labels on all segments."""
+    from importlib.util import spec_from_file_location, module_from_spec
+    spec = spec_from_file_location("segment_transcript",
+        os.path.join(os.path.dirname(__file__), "..", "segment-transcript.py"))
+    mod = module_from_spec(spec)
+    spec.loader.exec_module(mod)
+
+    segments = [
+        {"start": 0.0, "end": 5.0, "text": "Hello everyone.", "speaker": "Speaker 1"},
+        {"start": 5.0, "end": 10.0, "text": "Let's discuss the first ticket.", "speaker": "Speaker 2"},
+        {"start": 10.0, "end": 15.0, "text": "Moving on to the second ticket.", "speaker": "Speaker 1"},
+        {"start": 15.0, "end": 20.0, "text": "This needs a database change.", "speaker": "Speaker 2"},
+    ]
+    marks = [
+        {"time": "00:00:00", "seconds": 0, "ticket": "GT-100", "note": None},
+        {"time": "00:00:10", "seconds": 10, "ticket": "GT-200", "note": None},
+    ]
+
+    result = mod.segment_by_tickets(segments, marks)
+
+    assert len(result) == 2
+
+    # First ticket should have speaker-prefixed lines joined with double-newline
+    assert "**Speaker 1:** Hello everyone." in result[0]["text"]
+    assert "**Speaker 2:** Let's discuss the first ticket." in result[0]["text"]
+    assert "\n\n" in result[0]["text"]
+
+    # Second ticket
+    assert "**Speaker 1:** Moving on to the second ticket." in result[1]["text"]
+    assert "**Speaker 2:** This needs a database change." in result[1]["text"]
+    assert "\n\n" in result[1]["text"]
+
+
+def test_segment_by_tickets_mixed_speakers_and_no_speakers():
+    """Test segmentation with a mix of labeled and unlabeled segments."""
+    from importlib.util import spec_from_file_location, module_from_spec
+    spec = spec_from_file_location("segment_transcript",
+        os.path.join(os.path.dirname(__file__), "..", "segment-transcript.py"))
+    mod = module_from_spec(spec)
+    spec.loader.exec_module(mod)
+
+    segments = [
+        {"start": 0.0, "end": 5.0, "text": "Hello everyone.", "speaker": "Speaker 1"},
+        {"start": 5.0, "end": 10.0, "text": "[inaudible]"},
+        {"start": 10.0, "end": 15.0, "text": "Let me continue.", "speaker": "Speaker 2"},
+    ]
+    marks = [
+        {"time": "00:00:00", "seconds": 0, "ticket": "GT-100", "note": None},
+    ]
+
+    result = mod.segment_by_tickets(segments, marks)
+
+    assert len(result) == 1
+    text = result[0]["text"]
+
+    # Speaker-labeled segments get prefix
+    assert "**Speaker 1:** Hello everyone." in text
+    assert "**Speaker 2:** Let me continue." in text
+
+    # Unlabeled segment appears without prefix
+    assert "[inaudible]" in text
+    assert "**Speaker" not in text.split("[inaudible]")[0].split("\n")[-1] or \
+        text.count("**Speaker") == 2  # only the two labeled ones have prefix
+
+    # Joined with double-newline
+    assert "\n\n" in text

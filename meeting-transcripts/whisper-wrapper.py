@@ -26,7 +26,9 @@ def main():
             "text": result["text"].strip(),
             "language": result.get("language", "en"),
             "segments": [
-                {"start": seg["start"], "end": seg["end"], "text": seg["text"]}
+                {"start": seg["start"], "end": seg["end"], "text": seg["text"],
+                 "no_speech_prob": seg.get("no_speech_prob", 0.0),
+                 "avg_logprob": seg.get("avg_logprob", 0.0)}
                 for seg in result.get("segments", [])
             ]
         }

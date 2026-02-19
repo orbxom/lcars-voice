@@ -23,6 +23,7 @@ RECORDINGS_SOURCE="${RECORDINGS_SOURCE:-$HOME/zoom-recordings}"
 WHISPER_MODEL="${WHISPER_MODEL:-large-v3}"
 PYTHON_ENV="${PYTHON_ENV:-$HOME/voice-to-text-env/bin/python}"
 WHISPER_SCRIPT="$SCRIPT_DIR/whisper-wrapper.py"
+DIARIZE_SCRIPT="$SCRIPT_DIR/diarize.py"
 SEGMENT_SCRIPT="$SCRIPT_DIR/segment-transcript.py"
 
 # Arguments
@@ -97,20 +98,31 @@ for recording_dir in "${matching_dirs[@]}"; do
 
     echo "$json_output" > "$whisper_output_file"
 
+    # Diarize — add speaker labels
+    echo "  Running speaker diarization..."
+    diarized_output_file=$(mktemp /tmp/diarized-output-XXXXXX.json)
+    diarize_log="$recording_dir/diarize.log"
+    if "$PYTHON_ENV" "$DIARIZE_SCRIPT" "$audio_file" "$whisper_output_file" ${HF_TOKEN:+--hf-token "$HF_TOKEN"} > "$diarized_output_file" 2>"$diarize_log"; then
+        segment_input="$diarized_output_file"
+    else
+        echo "  Warning: Diarization failed, proceeding without speaker labels (see $diarize_log)" >&2
+        segment_input="$whisper_output_file"
+    fi
+
     # Extract date from directory name (YYYY-MM-DD from YYYY-MM-DD-HHMMSS)
     recording_date=$(echo "$dir_name" | cut -d'-' -f1-3)
 
     # Segment transcript by JIRA ticket marks
     echo "  Segmenting by ticket marks..."
     "$PYTHON_ENV" "$SEGMENT_SCRIPT" \
-        "$whisper_output_file" \
+        "$segment_input" \
         "$timestamps_file" \
         "$OUTPUT_DIR" \
         --source "$dir_name/audio.wav" \
         --date "$recording_date"
 
-    # Clean up temp file
-    rm -f "$whisper_output_file"
+    # Clean up temp files
+    rm -f "$whisper_output_file" "$diarized_output_file"
 
     echo "  Done"
     echo ""

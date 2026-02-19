@@ -25,7 +25,19 @@ def segment_by_tickets(segments, marks):
 
     if not ticket_marks:
         # No ticket marks — return full transcript as a single unmarked block
-        full_text = " ".join(seg["text"].strip() for seg in segments)
+        has_speakers = any(seg.get("speaker") for seg in segments)
+        if has_speakers:
+            parts = []
+            for seg in segments:
+                text = seg["text"].strip()
+                speaker = seg.get("speaker")
+                if speaker:
+                    parts.append(f"**{speaker}:** {text}")
+                else:
+                    parts.append(text)
+            full_text = "\n\n".join(parts)
+        else:
+            full_text = " ".join(seg["text"].strip() for seg in segments)
         return [{"ticket": None, "start_time": None, "end_time": None, "text": full_text}]
 
     result = []
@@ -43,16 +55,25 @@ def segment_by_tickets(segments, marks):
         segment_texts = []
         for seg in segments:
             if range_start <= seg["start"] < range_end:
-                segment_texts.append(seg["text"].strip())
+                text = seg["text"].strip()
+                speaker = seg.get("speaker")
+                if speaker:
+                    segment_texts.append(f"**{speaker}:** {text}")
+                else:
+                    segment_texts.append(text)
 
         start_display = "00:00:00" if i == 0 else mark["time"]
         end_display = ticket_marks[i + 1]["time"] if i + 1 < len(ticket_marks) else None
+
+        has_speakers = any(seg.get("speaker") for seg in segments
+                           if range_start <= seg["start"] < range_end)
+        joiner = "\n\n" if has_speakers else " "
 
         result.append({
             "ticket": mark["ticket"],
             "start_time": start_display,
             "end_time": end_display,
-            "text": " ".join(segment_texts),
+            "text": joiner.join(segment_texts),
         })
 
     return result
