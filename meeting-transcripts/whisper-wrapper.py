@@ -22,10 +22,15 @@ def main():
             print(f"[WHISPER] GPU: {torch.cuda.get_device_name(0)}", file=sys.stderr)
         model = whisper.load_model(model_name, device=device)
         result = model.transcribe(audio_path, language="en", fp16=(device == "cuda"))
-        print(json.dumps({
+        output = {
             "text": result["text"].strip(),
-            "language": result.get("language", "en")
-        }))
+            "language": result.get("language", "en"),
+            "segments": [
+                {"start": seg["start"], "end": seg["end"], "text": seg["text"]}
+                for seg in result.get("segments", [])
+            ]
+        }
+        print(json.dumps(output))
     except Exception as e:
         print(json.dumps({"error": str(e)}))
         sys.exit(1)
