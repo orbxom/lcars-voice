@@ -36,7 +36,8 @@ The input file has two sections:
 2. **JIRA information** - Structured task details between `<!-- JIRA_INFO_START -->` and `<!-- JIRA_INFO_END -->`
 
 **Transcript parsing tips:**
-- Speakers are not labeled; use context clues to follow conversation
+- Speakers are labeled as `**Speaker 1:**`, `**Speaker 2:**`, etc. — use these to follow who said what
+- Speaker numbers are consistent within a transcript but speakers are not identified by name
 - Technical terms and code references are key signals
 - Look for decisions, rationale, and "we agreed" statements
 - Note file names, function names, and IDs mentioned

@@ -20,9 +20,10 @@ cp .env.example .env
 
 ### Prerequisites
 
-- Python virtualenv with Whisper at `~/voice-to-text-env` (or set `PYTHON_ENV` in `.env`)
+- Python virtualenv with Whisper and pyannote.audio at `~/voice-to-text-env` (or set `PYTHON_ENV` in `.env`)
 - FFmpeg
 - JIRA API token
+- HuggingFace token with access to [pyannote/speaker-diarization-3.1](https://huggingface.co/pyannote/speaker-diarization-3.1) (for speaker diarization)
 - [zoom-recorder](../zoom-recorder/) producing recordings in `~/zoom-recordings/`
 
 ### Configuration
@@ -37,6 +38,9 @@ JIRA_TOKEN=your-api-token
 
 # Whisper
 WHISPER_MODEL=large-v3
+
+# Speaker diarization
+HF_TOKEN=your-huggingface-token
 
 # Paths (optional, these are the defaults)
 RECORDINGS_SOURCE=~/zoom-recordings
@@ -77,9 +81,12 @@ The pipeline processes zoom-recorder output directories from `~/zoom-recordings/
 
 For each recording:
 1. Whisper transcribes `audio.wav` into text segments with timestamps
-2. Segments are matched to JIRA tickets using `timestamps.json` marks
-3. Per-ticket `.md` files are written (e.g., `GT-9516.md`)
-4. JIRA metadata (summary, status, subtasks, comments, attachments) is appended
+2. pyannote.audio runs speaker diarization, assigning each segment a speaker label (`Speaker 1`, `Speaker 2`, etc.)
+3. Hallucinated segments are filtered (using whisper confidence scores and language detection)
+4. Consecutive same-speaker segments are merged for readability
+5. Segments are matched to JIRA tickets using `timestamps.json` marks
+6. Per-ticket `.md` files are written (e.g., `GT-9516.md`) with speaker attribution
+7. JIRA metadata (summary, status, subtasks, comments, attachments) is appended
 
 ## Output
 
@@ -95,8 +102,9 @@ If the same ticket is discussed in multiple recording sessions, the transcript s
 | Script | Purpose |
 |--------|---------|
 | `process-recordings.sh` | Master orchestrator - runs all steps |
-| `process-local-recordings.sh` | Finds recordings by date, transcribes, segments by ticket |
+| `process-local-recordings.sh` | Finds recordings by date, transcribes, diarizes, segments by ticket |
 | `fetch-jira-info.sh` | JIRA API enrichment |
+| `diarize.py` | Speaker diarization with pyannote + hallucination filtering |
 | `segment-transcript.py` | Splits whisper output by JIRA timestamp marks |
 | `whisper-wrapper.py` | Python wrapper for Whisper |
 
