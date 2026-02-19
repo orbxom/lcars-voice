@@ -40,7 +40,7 @@ class ZoomRecorderApp:
         """Build the UI components."""
         self.root = tk.Tk()
         self.root.title("Zoom Recorder")
-        self.root.geometry("300x220")
+        self.root.geometry("320x220")
         self.root.resizable(False, False)
         self.root.attributes('-topmost', True)
 
@@ -48,11 +48,21 @@ class ZoomRecorderApp:
         main = ttk.Frame(self.root, padding="10")
         main.pack(fill=tk.BOTH, expand=True)
 
+        # Button frame for Start/Stop and Pause/Resume
+        btn_frame = ttk.Frame(main)
+        btn_frame.pack(fill=tk.X, pady=(0, 10))
+
         # Start/Stop button
         self.record_btn = ttk.Button(
-            main, text="Start Recording", command=self._toggle_recording
+            btn_frame, text="Start Recording", command=self._toggle_recording
         )
-        self.record_btn.pack(fill=tk.X, pady=(0, 10))
+        self.record_btn.pack(side=tk.LEFT, expand=True, fill=tk.X, padx=(0, 5))
+
+        # Pause/Resume button
+        self.pause_btn = ttk.Button(
+            btn_frame, text="Pause", command=self._toggle_pause, state=tk.DISABLED
+        )
+        self.pause_btn.pack(side=tk.LEFT, expand=True, fill=tk.X)
 
         # Timer and recording indicator
         timer_frame = ttk.Frame(main)
@@ -86,7 +96,7 @@ class ZoomRecorderApp:
 
     def _toggle_recording(self):
         """Start or stop recording."""
-        if self.recorder and self.recorder.is_recording:
+        if self.recorder and (self.recorder.is_recording or self.recorder.is_paused):
             if messagebox.askyesno("Stop Recording", "Stop recording and save?"):
                 self._stop_recording()
         else:
@@ -108,6 +118,7 @@ class ZoomRecorderApp:
         self.timestamp_mgr = TimestampManager(self.recorder.start_time)
 
         self.record_btn.configure(text="Stop Recording")
+        self.pause_btn.configure(state=tk.NORMAL, text="Pause")
         self.mark_btn.configure(state=tk.NORMAL)
         self.rec_indicator.configure(text="● REC")
         self.last_mark_label.configure(text="")
@@ -123,6 +134,7 @@ class ZoomRecorderApp:
         try:
             end_time = datetime.now()
             self.recorder.stop()
+            recording_duration = self.recorder.elapsed_seconds
 
             # Save timestamps and metadata
             output_dir = self.recorder.output_dir
@@ -130,23 +142,48 @@ class ZoomRecorderApp:
             write_metadata(
                 os.path.join(output_dir, "metadata.json"),
                 self.recorder.start_time,
-                end_time
+                end_time,
+                recording_duration=recording_duration
             )
             messagebox.showinfo("Recording Saved", f"Saved to:\n{output_dir}")
         except Exception as e:
             messagebox.showerror("Error", f"Error saving recording:\n{e}")
         finally:
             self.record_btn.configure(text="Start Recording")
+            self.pause_btn.configure(state=tk.DISABLED, text="Pause")
             self.mark_btn.configure(state=tk.DISABLED)
             self.rec_indicator.configure(text="")
             self.timer_label.configure(text="00:00:00")
+
+    def _toggle_pause(self):
+        """Pause or resume recording."""
+        if not self.recorder:
+            return
+
+        try:
+            if self.recorder.is_paused:
+                self.recorder.resume()
+                self.pause_btn.configure(text="Pause")
+                self.mark_btn.configure(state=tk.NORMAL)
+                self.rec_indicator.configure(text="● REC", foreground='red')
+                self._update_timer()
+            elif self.recorder.is_recording:
+                self.recorder.pause()
+                self.pause_btn.configure(text="Resume")
+                self.mark_btn.configure(state=tk.DISABLED)
+                self.rec_indicator.configure(text="⏸ PAUSED", foreground='orange')
+                if self._timer_id:
+                    self.root.after_cancel(self._timer_id)
+                    self._timer_id = None
+        except Exception as e:
+            messagebox.showerror("Error", f"Pause/resume failed:\n{e}")
 
     def _mark_timestamp(self):
         """Mark current timestamp with optional JIRA ticket."""
         if not self.recorder or not self.recorder.is_recording:
             return
 
-        elapsed = int((datetime.now() - self.recorder.start_time).total_seconds())
+        elapsed = int(self.recorder.elapsed_seconds)
         ticket = self.ticket_var.get().strip() or None
 
         mark = self.timestamp_mgr.add_mark(elapsed, ticket)
@@ -160,10 +197,13 @@ class ZoomRecorderApp:
 
     def _update_timer(self):
         """Update the elapsed time display."""
-        if not self.recorder or not self.recorder.is_recording:
+        if not self.recorder or (not self.recorder.is_recording and not self.recorder.is_paused):
             return
 
-        elapsed = int((datetime.now() - self.recorder.start_time).total_seconds())
+        if self.recorder.is_paused:
+            return
+
+        elapsed = int(self.recorder.elapsed_seconds)
         hours = elapsed // 3600
         minutes = (elapsed % 3600) // 60
         seconds = elapsed % 60
@@ -173,7 +213,7 @@ class ZoomRecorderApp:
 
     def _on_close(self):
         """Handle window close."""
-        if self.recorder and self.recorder.is_recording:
+        if self.recorder and (self.recorder.is_recording or self.recorder.is_paused):
             if messagebox.askyesno("Recording Active", "Stop recording and save?"):
                 self._stop_recording()
             else:
