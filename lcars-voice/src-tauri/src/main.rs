@@ -1,11 +1,12 @@
 //! LCARS Voice - Desktop voice recorder and transcriber.
 //!
-//! A Tauri v2 application that records audio via arecord, transcribes it
-//! using OpenAI Whisper, and copies results to the clipboard.
+//! A Tauri v2 application that records audio via cpal, transcribes it
+//! using whisper-rs (native whisper.cpp), and copies results to the clipboard.
 
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod database;
+mod model_manager;
 mod recording;
 mod transcription;
 
@@ -14,7 +15,7 @@ use recording::Recorder;
 use std::path::PathBuf;
 use std::sync::{
     atomic::{AtomicBool, Ordering},
-    Mutex,
+    Arc, Mutex,
 };
 use tauri::{
     image::Image,
@@ -22,7 +23,9 @@ use tauri::{
     Emitter, Manager, State,
 };
 use tauri_plugin_global_shortcut::{Code, GlobalShortcutExt, Modifiers, Shortcut, ShortcutState};
+use tauri_plugin_notification::NotificationExt;
 use tauri_plugin_store::StoreExt;
+use whisper_rs::{WhisperContext, WhisperContextParameters};
 
 const VALID_WHISPER_MODELS: &[&str] = &["base", "small", "medium", "large"];
 
@@ -53,7 +56,31 @@ struct AppState {
     db: Mutex<Database>,
     recorder: Mutex<Recorder>,
     is_recording: AtomicBool,
-    venv_path: PathBuf,
+    whisper_ctx: Arc<Mutex<Option<WhisperContext>>>,
+    current_model_name: Mutex<String>,
+}
+
+fn ensure_whisper_context(
+    app: &tauri::AppHandle,
+    state: &AppState,
+    model_name: &str,
+) -> Result<(), String> {
+    let mut ctx_guard = state.whisper_ctx.lock().map_err(|e| e.to_string())?;
+    let mut current = state.current_model_name.lock().map_err(|e| e.to_string())?;
+
+    if ctx_guard.is_none() || *current != model_name {
+        if !model_manager::is_model_downloaded(model_name) {
+            model_manager::download_model(app, model_name)?;
+        }
+        let path = model_manager::model_path(model_name);
+        let path_str = path.to_str().ok_or("Invalid model path")?;
+        eprintln!("[LCARS] Loading whisper model: {}", model_name);
+        let ctx = WhisperContext::new_with_params(path_str, WhisperContextParameters::default())
+            .map_err(|e| format!("Failed to load model: {}", e))?;
+        *ctx_guard = Some(ctx);
+        *current = model_name.to_string();
+    }
+    Ok(())
 }
 
 #[tauri::command]
@@ -130,38 +157,59 @@ fn handle_stop_and_transcribe(app: &tauri::AppHandle) {
     std::thread::spawn(move || {
         let state: tauri::State<AppState> = app_clone.state();
 
-        let audio_path = match state.recorder.lock() {
-            Ok(mut recorder) => recorder.stop(),
+        // Step 1: Stop recording and get audio data
+        let recording = match state.recorder.lock() {
+            Ok(mut recorder) => match recorder.stop() {
+                Ok(r) => r,
+                Err(e) => {
+                    send_notification(&app_clone, "LCARS Voice", &format!("Error: {}", e));
+                    let _ = app_clone.emit("transcription-error", e);
+                    return;
+                }
+            },
             Err(e) => {
                 let _ = app_clone.emit("transcription-error", format!("Lock error: {}", e));
                 return;
             }
         };
 
-        match audio_path {
-            Ok(path) => {
-                let _ = app_clone.emit("transcribing", ());
-                let resource_dir = app_clone.path().resource_dir().ok();
-                let result = transcription::transcribe(
-                    &path,
-                    &model,
-                    &state.venv_path,
-                    resource_dir.as_deref(),
-                );
-                match result {
-                    Ok(text) => {
-                        if let Ok(db) = state.db.lock() {
-                            let _ = db.add_transcription(&text, None, &model);
-                        }
-                        let preview = truncate_preview(&text, 50);
-                        send_notification(&app_clone, "LCARS Voice", &preview);
-                        let _ = app_clone.emit("transcription-complete", text);
-                    }
-                    Err(e) => {
-                        send_notification(&app_clone, "LCARS Voice", &format!("Error: {}", e));
-                        let _ = app_clone.emit("transcription-error", e);
-                    }
+        let _ = app_clone.emit("transcribing", ());
+
+        // Step 2: Ensure whisper model is loaded (may trigger download)
+        if let Err(e) = ensure_whisper_context(&app_clone, &state, &model) {
+            send_notification(&app_clone, "LCARS Voice", &format!("Model error: {}", e));
+            let _ = app_clone.emit("transcription-error", e);
+            return;
+        }
+
+        // Step 3: Transcribe
+        let ctx_guard = match state.whisper_ctx.lock() {
+            Ok(g) => g,
+            Err(e) => {
+                let _ = app_clone.emit("transcription-error", format!("Lock error: {}", e));
+                return;
+            }
+        };
+
+        let ctx = match ctx_guard.as_ref() {
+            Some(c) => c,
+            None => {
+                let _ = app_clone.emit("transcription-error", "Whisper context not loaded".to_string());
+                return;
+            }
+        };
+
+        match transcription::transcribe(ctx, &recording.audio_data, &model) {
+            Ok(result) => {
+                // Step 4: Save to DB with real duration
+                if let Ok(db) = state.db.lock() {
+                    let _ = db.add_transcription(&result.text, Some(recording.duration_ms), &model);
                 }
+
+                // Step 5: Notify and emit
+                let preview = truncate_preview(&result.text, 50);
+                send_notification(&app_clone, "LCARS Voice", &preview);
+                let _ = app_clone.emit("transcription-complete", result.text);
             }
             Err(e) => {
                 send_notification(&app_clone, "LCARS Voice", &format!("Error: {}", e));
@@ -174,25 +222,6 @@ fn handle_stop_and_transcribe(app: &tauri::AppHandle) {
 #[tauri::command]
 fn start_recording(app: tauri::AppHandle) -> Result<(), String> {
     handle_start_recording(&app)
-}
-
-#[tauri::command]
-async fn transcribe_audio(
-    app: tauri::AppHandle,
-    state: State<'_, AppState>,
-    audio_path: String,
-) -> Result<String, String> {
-    let path_str = audio_path.clone();
-    let venv = state.venv_path.clone();
-    let model = get_current_model(&app);
-    let resource_dir = app.path().resource_dir().ok();
-
-    tokio::task::spawn_blocking(move || {
-        let path = std::path::Path::new(&path_str);
-        transcription::transcribe(path, &model, &venv, resource_dir.as_deref())
-    })
-    .await
-    .map_err(|e| format!("Task join error: {}", e))?
 }
 
 #[tauri::command]
@@ -229,27 +258,11 @@ fn get_current_model(app: &tauri::AppHandle) -> String {
     resolve_whisper_model(store_value, env_value)
 }
 
-fn send_notification(_app: &tauri::AppHandle, title: &str, body: &str) {
-    let title = title.to_string();
-    let body = body.to_string();
-    std::thread::spawn(move || {
-        match std::process::Command::new("notify-send")
-            .arg(&title)
-            .arg(&body)
-            .status()
-        {
-            Ok(status) if status.success() => {
-                eprintln!("[LCARS] notification: Sent '{}' - '{}'", title, body)
-            }
-            Ok(status) => {
-                eprintln!(
-                    "[LCARS] notification: notify-send failed with status: {}",
-                    status
-                )
-            }
-            Err(e) => eprintln!("[LCARS] notification: Failed to run notify-send: {:?}", e),
-        }
-    });
+fn send_notification(app: &tauri::AppHandle, title: &str, body: &str) {
+    match app.notification().builder().title(title).body(body).show() {
+        Ok(_) => eprintln!("[LCARS] notification: Sent '{}' - '{}'", title, body),
+        Err(e) => eprintln!("[LCARS] notification: Failed: {:?}", e),
+    }
 }
 
 #[tauri::command]
@@ -258,19 +271,38 @@ fn stop_recording(app: tauri::AppHandle) -> Result<(), String> {
     Ok(())
 }
 
+#[tauri::command]
+fn is_model_downloaded(model: String) -> bool {
+    model_manager::is_model_downloaded(&model)
+}
+
+#[tauri::command]
+async fn download_model(app: tauri::AppHandle, model: String) -> Result<(), String> {
+    tokio::task::spawn_blocking(move || {
+        model_manager::download_model(&app, &model)?;
+        Ok(())
+    })
+    .await
+    .map_err(|e| format!("Task error: {}", e))?
+}
+
+#[tauri::command]
+fn get_audio_level(state: State<AppState>) -> Result<f32, String> {
+    let recorder = state.recorder.lock().map_err(|e| e.to_string())?;
+    Ok(recorder.current_rms_level())
+}
+
 fn main() {
     eprintln!("[LCARS] Application starting");
     let db = Database::new().expect("Failed to initialize database");
     let recorder = Recorder::new();
-    let venv_path = dirs::home_dir()
-        .unwrap_or_else(|| PathBuf::from("."))
-        .join("voice-to-text-env");
 
     let app_state = AppState {
         db: Mutex::new(db),
         recorder: Mutex::new(recorder),
         is_recording: AtomicBool::new(false),
-        venv_path,
+        whisper_ctx: Arc::new(Mutex::new(None)),
+        current_model_name: Mutex::new(String::new()),
     };
 
     let hotkey = Shortcut::new(Some(Modifiers::SUPER | Modifiers::ALT), Code::KeyH);
@@ -305,6 +337,7 @@ fn main() {
         )
         .plugin(tauri_plugin_clipboard_manager::init())
         .plugin(tauri_plugin_store::Builder::default().build())
+        .plugin(tauri_plugin_notification::init())
         .manage(app_state)
         .invoke_handler(tauri::generate_handler![
             get_history,
@@ -312,9 +345,11 @@ fn main() {
             add_transcription,
             start_recording,
             stop_recording,
-            transcribe_audio,
             get_whisper_model,
-            set_whisper_model
+            set_whisper_model,
+            is_model_downloaded,
+            download_model,
+            get_audio_level,
         ])
         .setup(move |app| {
             // Set window icon
@@ -329,27 +364,41 @@ fn main() {
                 Err(e) => eprintln!("[LCARS] setup: Failed to register hotkey: {:?}", e),
             }
 
-            // Set up file-based toggle watcher for external control
-            let toggle_file = std::path::PathBuf::from("/tmp/lcars-voice-toggle");
-            // Clean up any existing toggle file
-            let _ = std::fs::remove_file(&toggle_file);
+            // Set up Unix socket toggle listener for external control
+            let socket_path = dirs::runtime_dir()
+                .unwrap_or_else(|| PathBuf::from("/tmp"))
+                .join("lcars-voice.sock");
+            // Clean up stale socket
+            let _ = std::fs::remove_file(&socket_path);
 
             let app_handle = app.handle().clone();
-            let toggle_path = toggle_file.clone();
-            std::thread::spawn(move || loop {
-                std::thread::sleep(std::time::Duration::from_millis(100));
-                if toggle_path.exists() {
-                    let _ = std::fs::remove_file(&toggle_path);
-                    eprintln!("[LCARS] toggle: File detected, toggling recording");
-
-                    let state = app_handle.state::<AppState>();
-                    let was_recording = state.is_recording.load(Ordering::SeqCst);
-
-                    if was_recording {
-                        handle_stop_and_transcribe(&app_handle);
-                    } else {
-                        if let Err(e) = handle_start_recording(&app_handle) {
-                            eprintln!("[LCARS] toggle: Failed to start recording: {}", e);
+            tauri::async_runtime::spawn(async move {
+                let listener = match tokio::net::UnixListener::bind(&socket_path) {
+                    Ok(l) => l,
+                    Err(e) => {
+                        eprintln!("[LCARS] toggle: Failed to bind socket: {}", e);
+                        return;
+                    }
+                };
+                eprintln!("[LCARS] toggle: Listening on {:?}", socket_path);
+                loop {
+                    if let Ok((mut stream, _)) = listener.accept().await {
+                        use tokio::io::AsyncReadExt;
+                        let mut buf = [0u8; 64];
+                        if let Ok(n) = stream.read(&mut buf).await {
+                            let msg = String::from_utf8_lossy(&buf[..n]);
+                            if msg.trim() == "toggle" {
+                                eprintln!("[LCARS] toggle: Socket command received");
+                                let state = app_handle.state::<AppState>();
+                                let was_recording = state.is_recording.load(Ordering::SeqCst);
+                                if was_recording {
+                                    handle_stop_and_transcribe(&app_handle);
+                                } else {
+                                    if let Err(e) = handle_start_recording(&app_handle) {
+                                        eprintln!("[LCARS] toggle: Failed: {}", e);
+                                    }
+                                }
+                            }
                         }
                     }
                 }
@@ -469,5 +518,75 @@ mod tests {
         let text = "🎤🎤🎤🎤🎤🎤🎤🎤🎤🎤🎤"; // 11 emoji
         let result = truncate_preview(text, 5);
         assert_eq!(result, "🎤🎤🎤🎤🎤...");
+    }
+
+    // Phase 3 tests: model readiness and AppState initialization
+
+    #[test]
+    fn test_nonexistent_model_not_downloaded() {
+        // ensure_whisper_context relies on is_model_downloaded;
+        // a nonexistent model name should not be considered downloaded
+        assert!(!model_manager::is_model_downloaded("nonexistent-test-model"));
+    }
+
+    #[test]
+    fn test_model_path_for_valid_models() {
+        // Verify model_path returns sensible paths for all valid models
+        for model in VALID_WHISPER_MODELS {
+            let path = model_manager::model_path(model);
+            let path_str = path.to_string_lossy();
+            assert!(
+                path_str.contains(&format!("ggml-{}.bin", model)),
+                "model_path('{}') should contain 'ggml-{}.bin', got: {}",
+                model,
+                model,
+                path_str
+            );
+        }
+    }
+
+    #[test]
+    fn test_app_state_initial_whisper_ctx_is_none() {
+        // Verify AppState initializes with no whisper context loaded
+        let db = Database::new().expect("Failed to create test db");
+        let state = AppState {
+            db: Mutex::new(db),
+            recorder: Mutex::new(Recorder::new()),
+            is_recording: AtomicBool::new(false),
+            whisper_ctx: Arc::new(Mutex::new(None)),
+            current_model_name: Mutex::new(String::new()),
+        };
+        assert!(state.whisper_ctx.lock().unwrap().is_none());
+        assert_eq!(*state.current_model_name.lock().unwrap(), "");
+        assert!(!state.is_recording.load(Ordering::SeqCst));
+    }
+
+    #[test]
+    fn test_app_state_recording_flag_toggle() {
+        let db = Database::new().expect("Failed to create test db");
+        let state = AppState {
+            db: Mutex::new(db),
+            recorder: Mutex::new(Recorder::new()),
+            is_recording: AtomicBool::new(false),
+            whisper_ctx: Arc::new(Mutex::new(None)),
+            current_model_name: Mutex::new(String::new()),
+        };
+        assert!(!state.is_recording.load(Ordering::SeqCst));
+        state.is_recording.store(true, Ordering::SeqCst);
+        assert!(state.is_recording.load(Ordering::SeqCst));
+        state.is_recording.store(false, Ordering::SeqCst);
+        assert!(!state.is_recording.load(Ordering::SeqCst));
+    }
+
+    #[test]
+    fn test_all_valid_models_have_download_urls() {
+        // Every model in VALID_WHISPER_MODELS should have a download URL
+        for model in VALID_WHISPER_MODELS {
+            assert!(
+                model_manager::get_model_url(model).is_some(),
+                "Valid model '{}' should have a download URL",
+                model
+            );
+        }
     }
 }

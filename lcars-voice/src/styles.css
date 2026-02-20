@@ -1,5 +1,14 @@
 /* LCARS Voice Interface - Authentic Star Trek Computer Aesthetic */
 
+/* Self-hosted Antonio font */
+@font-face {
+  font-family: 'Antonio';
+  src: url('fonts/Antonio-VariableFont_wght.woff2') format('woff2');
+  font-weight: 100 700;
+  font-style: normal;
+  font-display: swap;
+}
+
 :root {
   /* LCARS Color Palette */
   --lcars-orange: #FF9900;
@@ -850,4 +859,40 @@ body {
   .history-list {
     max-height: 170px;
   }
+}
+
+/* Download Progress Bar */
+.download-progress {
+  padding: 8px 0;
+}
+
+.download-label {
+  font-size: 11px;
+  letter-spacing: 2px;
+  color: var(--lcars-tan);
+  margin-bottom: 6px;
+}
+
+.progress-bar-container {
+  height: 8px;
+  background: rgba(153, 153, 255, 0.15);
+  border: 1px solid var(--lcars-blue);
+  border-radius: 4px;
+  overflow: hidden;
+}
+
+.progress-bar-fill {
+  height: 100%;
+  background: var(--lcars-orange);
+  border-radius: 3px;
+  transition: width 0.3s ease;
+  box-shadow: 0 0 8px rgba(255, 153, 0, 0.4);
+}
+
+.download-percent {
+  font-size: 11px;
+  color: var(--lcars-orange);
+  letter-spacing: 1px;
+  margin-top: 4px;
+  text-align: right;
 }

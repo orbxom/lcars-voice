@@ -191,6 +191,12 @@ class LCARSVoiceInterface {
       this.startIdleWaveform();
       this.flashStatus('ERROR: ' + event.payload);
     });
+
+    listen('model-download-progress', (event) => {
+      const { model, percent, bytes_downloaded, total_bytes } = event.payload;
+      console.log(`[LCARS] event: Model download ${model} ${percent}%`);
+      this.showDownloadProgress(model, percent);
+    });
   }
 
   updateStardate() {
@@ -271,11 +277,7 @@ class LCARSVoiceInterface {
   }
 
   async copyToClipboard(text) {
-    const writeText =
-      window.__TAURI__?.clipboard?.writeText ??
-      window.__TAURI__?.clipboardManager?.writeText;
-    if (!writeText) throw new Error('Clipboard API not available');
-    await writeText(text);
+    await window.__TAURI__.clipboardManager.writeText(text);
   }
 
   flashStatus(message) {
@@ -289,31 +291,56 @@ class LCARSVoiceInterface {
     }, 2000);
   }
 
-  // Simulated waveform animation during recording (no Web Audio API needed)
+  showDownloadProgress(model, percent) {
+    const container = document.getElementById('download-progress');
+    const modelName = document.getElementById('download-model-name');
+    const fill = document.getElementById('progress-bar-fill');
+    const percentLabel = document.getElementById('download-percent');
+
+    container.style.display = 'block';
+    modelName.textContent = model.toUpperCase();
+    fill.style.width = `${percent}%`;
+    percentLabel.textContent = `${percent}%`;
+
+    if (percent >= 100) {
+      setTimeout(() => {
+        container.style.display = 'none';
+      }, 1500);
+    }
+  }
+
   startWaveformAnimation() {
     const canvas = this.elements.waveform;
     const ctx = this.waveformCtx;
     const width = canvas.width;
     const height = canvas.height;
 
-    let offset = 0;
-    let noiseData = new Array(64).fill(0).map(() => Math.random() * 50);
+    let noiseData = new Array(64).fill(0);
+    let levelHistory = new Array(64).fill(0);
 
     const draw = () => {
       if (!this.isRecording) return;
-
       this.animationId = requestAnimationFrame(draw);
 
-      // Update noise data
+      // Shift history left and add new level
+      levelHistory.shift();
+
+      // Get real audio level from backend
+      window.__TAURI__.core.invoke('get_audio_level')
+        .then(level => {
+          const scaled = Math.min(80, level * 500);
+          levelHistory.push(scaled);
+        })
+        .catch(() => {
+          levelHistory.push(Math.random() * 50);
+        });
+
+      // Smooth the data
       for (let i = 0; i < noiseData.length; i++) {
-        noiseData[i] += (Math.random() - 0.5) * 20;
-        noiseData[i] = Math.max(10, Math.min(80, noiseData[i]));
+        noiseData[i] += ((levelHistory[i] || 0) - noiseData[i]) * 0.3;
       }
 
-      // Draw waveform
       this.drawWaveform(noiseData);
-
-      offset += 2;
     };
 
     draw();
@@ -505,6 +532,10 @@ class LCARSVoiceInterface {
 
   async setWhisperModel(model) {
     try {
+      const downloaded = await window.__TAURI__.core.invoke('is_model_downloaded', { model });
+      if (!downloaded) {
+        this.flashStatus('DOWNLOADING MODEL: ' + model.toUpperCase());
+      }
       await window.__TAURI__.core.invoke('set_whisper_model', { model });
       this.currentModel = model;
       this.updateModelDisplay();

@@ -1,91 +1,63 @@
-//! Bridge to Python OpenAI Whisper for audio transcription.
+//! Native whisper-rs transcription replacing the Python subprocess bridge.
 
-use serde::{Deserialize, Serialize};
-use std::path::Path;
-use std::process::Command;
+use whisper_rs::{FullParams, SamplingStrategy, WhisperContext};
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct TranscriptionResult {
-    pub text: Option<String>,
-    pub language: Option<String>,
-    pub error: Option<String>,
+    pub text: String,
+    pub language: String,
 }
 
+/// Transcribes audio data using a pre-loaded WhisperContext.
+///
+/// `audio_data` must be f32 PCM samples at 16kHz mono.
 pub fn transcribe(
-    audio_path: &Path,
-    model: &str,
-    venv_path: &Path,
-    resource_dir: Option<&Path>,
-) -> Result<String, String> {
+    ctx: &WhisperContext,
+    audio_data: &[f32],
+    model_name: &str,
+) -> Result<TranscriptionResult, String> {
     eprintln!(
-        "[LCARS] transcription: path={:?}, model={}",
-        audio_path, model
+        "[LCARS] transcription: model={}, samples={}",
+        model_name,
+        audio_data.len()
     );
 
-    let python_path = venv_path.join("bin").join("python3");
+    let mut params = FullParams::new(SamplingStrategy::Greedy { best_of: 1 });
+    params.set_language(Some("en"));
+    params.set_print_special(false);
+    params.set_print_progress(false);
+    params.set_print_realtime(false);
+    params.set_print_timestamps(false);
+    params.set_n_threads(4);
 
-    // Try resource directory first (production), then fall back to dev path
-    let script_path = resource_dir
-        .map(|dir| dir.join("scripts").join("whisper-wrapper.py"))
-        .filter(|p| p.exists())
-        .or_else(|| {
-            // Dev fallback: walk up from exe location
-            std::env::current_exe()
-                .ok()
-                .and_then(|p| {
-                    p.parent()
-                        .and_then(|p| p.parent())
-                        .and_then(|p| p.parent())
-                        .and_then(|p| p.parent())
-                        .map(|p| p.join("scripts").join("whisper-wrapper.py"))
-                })
-                .filter(|p| p.exists())
-        })
-        .unwrap_or_else(|| Path::new("scripts/whisper-wrapper.py").to_path_buf());
+    let mut state = ctx
+        .create_state()
+        .map_err(|e| format!("Failed to create whisper state: {}", e))?;
 
-    let output = Command::new(&python_path)
-        .args([
-            script_path.to_str().ok_or("Invalid script path")?,
-            audio_path.to_str().ok_or("Invalid audio path")?,
-            model,
-        ])
-        .output()
-        .map_err(|e| {
-            eprintln!("[LCARS] transcription: Failed to run whisper: {}", e);
-            format!("Failed to run whisper: {}", e)
-        })?;
+    state
+        .full(params, audio_data)
+        .map_err(|e| format!("Whisper inference failed: {}", e))?;
 
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        eprintln!(
-            "[LCARS] transcription: Whisper failed (exit {}): {}",
-            output.status.code().unwrap_or(-1),
-            stderr
-        );
-        return Err(format!(
-            "Whisper process failed (exit {}): {}",
-            output.status.code().unwrap_or(-1),
-            stderr
-        ));
+    let num_segments = state
+        .full_n_segments()
+        .map_err(|e| format!("Failed to get segment count: {}", e))?;
+
+    let mut text = String::new();
+    for i in 0..num_segments {
+        let segment = state
+            .full_get_segment_text(i)
+            .map_err(|e| format!("Failed to get segment {} text: {}", i, e))?;
+        text.push_str(&segment);
     }
 
-    let stdout = String::from_utf8_lossy(&output.stdout);
+    let text = text.trim().to_string();
 
-    let result: TranscriptionResult = serde_json::from_str(&stdout).map_err(|e| {
-        eprintln!("[LCARS] transcription: Failed to parse JSON: {}", e);
-        format!("Failed to parse whisper output: {} - raw: {}", e, stdout)
-    })?;
-
-    if let Some(error) = result.error {
-        eprintln!("[LCARS] transcription: Whisper error: {}", error);
-        return Err(error);
-    }
-
-    let text = result
-        .text
-        .ok_or_else(|| "No transcription text".to_string())?;
     eprintln!("[LCARS] transcription: Success, {} chars", text.len());
-    Ok(text)
+
+    Ok(TranscriptionResult {
+        text,
+        language: "en".to_string(),
+    })
 }
 
 #[cfg(test)]
@@ -93,42 +65,56 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_parse_success_json() {
-        let json = r#"{"text": "hello world", "language": "en"}"#;
-        let result: TranscriptionResult = serde_json::from_str(json).unwrap();
-        assert_eq!(result.text, Some("hello world".to_string()));
-        assert_eq!(result.language, Some("en".to_string()));
-        assert!(result.error.is_none());
+    fn test_transcription_result_serialize() {
+        let result = TranscriptionResult {
+            text: "hello world".to_string(),
+            language: "en".to_string(),
+        };
+        let json = serde_json::to_string(&result).expect("should serialize");
+        let deserialized: TranscriptionResult =
+            serde_json::from_str(&json).expect("should deserialize");
+        assert_eq!(deserialized.text, "hello world");
+        assert_eq!(deserialized.language, "en");
     }
 
     #[test]
-    fn test_parse_error_json() {
-        let json = r#"{"error": "something went wrong"}"#;
-        let result: TranscriptionResult = serde_json::from_str(json).unwrap();
-        assert!(result.text.is_none());
-        assert_eq!(result.error, Some("something went wrong".to_string()));
+    fn test_transcription_result_fields() {
+        let result = TranscriptionResult {
+            text: "test transcription".to_string(),
+            language: "fr".to_string(),
+        };
+        assert_eq!(result.text, "test transcription");
+        assert_eq!(result.language, "fr");
     }
 
     #[test]
-    fn test_parse_missing_text() {
-        let json = r#"{"language": "en"}"#;
-        let result: TranscriptionResult = serde_json::from_str(json).unwrap();
-        assert!(result.text.is_none());
-        assert!(result.error.is_none());
-    }
+    #[ignore]
+    fn test_transcribe_silence() {
+        // Integration test: requires the base model to be downloaded
+        let model_file = crate::model_manager::model_path("base");
+        if !model_file.exists() {
+            eprintln!(
+                "[LCARS] test_transcribe_silence: skipping, model not found at {:?}",
+                model_file
+            );
+            return;
+        }
 
-    #[test]
-    fn test_transcribe_missing_python() {
-        // Using a bogus venv path should give a clear error
-        let bogus_venv = Path::new("/tmp/nonexistent-venv-lcars-test");
-        let bogus_audio = Path::new("/tmp/nonexistent-audio.wav");
-        let result = transcribe(bogus_audio, "base", bogus_venv, None);
-        assert!(result.is_err());
-        let err = result.unwrap_err();
+        let ctx = WhisperContext::new_with_params(
+            model_file.to_str().unwrap(),
+            whisper_rs::WhisperContextParameters::default(),
+        )
+        .expect("failed to load model");
+
+        // 2 seconds of silence at 16kHz
+        let silence = vec![0.0f32; 16000 * 2];
+        let result = transcribe(&ctx, &silence, "base").expect("transcription should succeed");
+        // Silence should produce very short or empty text
         assert!(
-            err.contains("Failed to run whisper") || err.contains("No such file"),
-            "Expected error about missing python, got: {}",
-            err
+            result.text.len() < 100,
+            "Silence transcription should be short, got {} chars: '{}'",
+            result.text.len(),
+            result.text
         );
     }
 }
