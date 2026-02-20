@@ -850,6 +850,180 @@ body {
 }
 
 /* ============================================
+   MODE SELECTOR (mirrors model-selector)
+   ============================================ */
+.mode-selector {
+  position: relative;
+  padding: 0;
+  z-index: 100;
+}
+
+.mode-btn {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0 16px;
+  height: 100%;
+  border: none;
+  background: var(--lcars-tan);
+  color: var(--lcars-black);
+  font-family: var(--font-display);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 2px;
+  cursor: pointer;
+  transition: background 0.15s ease;
+}
+
+.mode-btn:hover {
+  background: var(--lcars-tan-light);
+}
+
+.mode-btn.active {
+  background: var(--lcars-orange);
+}
+
+.mode-label {
+  opacity: 0.7;
+}
+
+.mode-arrow {
+  font-size: 10px;
+  transition: transform 0.15s ease;
+}
+
+.mode-btn.active .mode-arrow {
+  transform: rotate(180deg);
+}
+
+.mode-dropdown {
+  position: absolute;
+  bottom: 100%;
+  left: 0;
+  background: var(--lcars-black);
+  border: 2px solid var(--lcars-tan);
+  border-radius: 12px 12px 0 0;
+  padding: 4px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 140px;
+  opacity: 0;
+  visibility: hidden;
+  transform: translateY(10px);
+  transition: all 0.15s ease;
+}
+
+.mode-dropdown.open {
+  opacity: 1;
+  visibility: visible;
+  transform: translateY(0);
+}
+
+.mode-option {
+  padding: 10px 16px;
+  border: none;
+  border-radius: 8px;
+  background: var(--lcars-tan);
+  color: var(--lcars-black);
+  font-family: var(--font-display);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 2px;
+  cursor: pointer;
+  transition: all 0.1s ease;
+  text-align: left;
+}
+
+.mode-option:hover {
+  background: var(--lcars-orange);
+}
+
+.mode-option.selected {
+  background: var(--lcars-orange);
+  box-shadow: inset 0 0 0 2px var(--lcars-orange-light);
+}
+
+/* ============================================
+   MEETING CONTROLS
+   ============================================ */
+.meeting-controls {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.jira-input-row {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
+.jira-input {
+  flex: 1;
+  padding: 8px 12px;
+  border-radius: 0 16px 16px 0;
+}
+
+.mark-btn {
+  padding: 8px 16px;
+  border-radius: 0 var(--bar-curve) var(--bar-curve) 0;
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.marks-list {
+  max-height: 80px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.marks-list::-webkit-scrollbar {
+  width: 4px;
+}
+
+.marks-list::-webkit-scrollbar-thumb {
+  background: var(--lcars-purple);
+  border-radius: 2px;
+}
+
+.mark-item {
+  display: flex;
+  gap: 8px;
+  padding: 4px 8px;
+  font-size: 11px;
+  border-left: 2px solid var(--lcars-orange);
+}
+
+.mark-time {
+  color: var(--lcars-orange);
+  font-weight: 600;
+  letter-spacing: 1px;
+}
+
+.mark-ticket {
+  color: var(--lcars-blue);
+  letter-spacing: 1px;
+}
+
+/* Pause button */
+.pause-btn {
+  padding: 12px 20px;
+  background: var(--lcars-blue);
+}
+
+.pause-btn:hover {
+  background: var(--lcars-blue-light);
+}
+
+.pause-btn.paused {
+  background: var(--lcars-orange);
+  animation: recording-pulse 1s ease-in-out infinite;
+}
+
+/* ============================================
    RESPONSIVE
    ============================================ */
 @media (max-height: 540px) {

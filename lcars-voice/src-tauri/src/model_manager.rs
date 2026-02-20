@@ -6,10 +6,22 @@ use std::path::PathBuf;
 use tauri::Emitter;
 
 const MODEL_URLS: &[(&str, &str)] = &[
-    ("base",   "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-base.bin"),
-    ("small",  "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-small.bin"),
-    ("medium", "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-medium.bin"),
-    ("large",  "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-large-v3.bin"),
+    (
+        "base",
+        "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-base.bin",
+    ),
+    (
+        "small",
+        "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-small.bin",
+    ),
+    (
+        "medium",
+        "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-medium.bin",
+    ),
+    (
+        "large",
+        "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-large-v3.bin",
+    ),
 ];
 
 /// Returns the directory where models are stored.
@@ -43,13 +55,15 @@ pub fn get_model_url(model_name: &str) -> Option<&'static str> {
 /// Emits `model-download-progress` events with `{ model, percent, bytes_downloaded, total_bytes }`.
 /// Downloads to a `.downloading` temp file first, then performs an atomic rename.
 pub fn download_model(app: &tauri::AppHandle, model_name: &str) -> Result<PathBuf, String> {
-    let url = get_model_url(model_name)
-        .ok_or_else(|| format!("Unknown model: {}", model_name))?;
+    let url = get_model_url(model_name).ok_or_else(|| format!("Unknown model: {}", model_name))?;
 
     let dest = model_path(model_name);
     let dir = models_dir();
 
-    eprintln!("[LCARS] model_manager: downloading model '{}' to {:?}", model_name, dest);
+    eprintln!(
+        "[LCARS] model_manager: downloading model '{}' to {:?}",
+        model_name, dest
+    );
 
     // Ensure the models directory exists
     fs::create_dir_all(&dir)
@@ -64,7 +78,10 @@ pub fn download_model(app: &tauri::AppHandle, model_name: &str) -> Result<PathBu
         .map_err(|e| format!("Failed to start download: {}", e))?;
 
     if !response.status().is_success() {
-        return Err(format!("Download failed with HTTP status: {}", response.status()));
+        return Err(format!(
+            "Download failed with HTTP status: {}",
+            response.status()
+        ));
     }
 
     let total_bytes = response.content_length().unwrap_or(0);
@@ -165,15 +182,27 @@ mod tests {
     fn test_model_url_valid() {
         assert!(get_model_url("base").is_some(), "base should have a URL");
         assert!(get_model_url("small").is_some(), "small should have a URL");
-        assert!(get_model_url("medium").is_some(), "medium should have a URL");
+        assert!(
+            get_model_url("medium").is_some(),
+            "medium should have a URL"
+        );
         assert!(get_model_url("large").is_some(), "large should have a URL");
     }
 
     #[test]
     fn test_model_url_invalid() {
-        assert!(get_model_url("tiny").is_none(), "tiny should not have a URL");
-        assert!(get_model_url("xlarge").is_none(), "xlarge should not have a URL");
-        assert!(get_model_url("").is_none(), "empty string should not have a URL");
+        assert!(
+            get_model_url("tiny").is_none(),
+            "tiny should not have a URL"
+        );
+        assert!(
+            get_model_url("xlarge").is_none(),
+            "xlarge should not have a URL"
+        );
+        assert!(
+            get_model_url("").is_none(),
+            "empty string should not have a URL"
+        );
     }
 
     #[test]

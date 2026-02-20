@@ -4,12 +4,16 @@
 # - If app running: toggle recording via Unix socket
 
 APP_NAME="lcars-voice"
-PROJECT_DIR="$HOME/personal/claude-tools/lcars-voice"
+BINARY="$HOME/personal/claude-tools/lcars-voice/src-tauri/target/release/lcars-voice"
 SOCKET_PATH="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/lcars-voice.sock"
+LOG="/tmp/lcars-toggle.log"
 
 start_app() {
-    cd "$PROJECT_DIR" || exit 1
-    cargo tauri dev &>/dev/null &
+    # Ensure display is set for GUI apps launched from GNOME keybindings
+    export DISPLAY="${DISPLAY:-:1}"
+    echo "$(date) Starting $BINARY" >> "$LOG"
+    "$BINARY" >> "$LOG" 2>&1 &
+    disown
 }
 
 # Check if socket exists and app is listening

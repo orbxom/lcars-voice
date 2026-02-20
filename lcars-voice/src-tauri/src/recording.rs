@@ -1,12 +1,19 @@
 //! Audio recording via cpal (cross-platform) with rubato resampling.
 
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
-use rubato::{Resampler, SincFixedIn, SincInterpolationParameters, SincInterpolationType, WindowFunction};
+use rubato::{
+    Resampler, SincFixedIn, SincInterpolationParameters, SincInterpolationType, WindowFunction,
+};
 use std::sync::{
     atomic::{AtomicBool, AtomicU32, Ordering},
     Arc, Mutex,
 };
 use std::time::Instant;
+
+pub enum CaptureMode {
+    MicOnly,
+    MicAndMonitor { monitor_device: cpal::Device },
+}
 
 pub struct Recorder {
     stream: Option<cpal::Stream>,
@@ -16,6 +23,16 @@ pub struct Recorder {
     device_sample_rate: u32,
     device_channels: u16,
     start_time: Option<Instant>,
+
+    // Dual-stream fields
+    monitor_stream: Option<cpal::Stream>,
+    monitor_buffer: Arc<Mutex<Vec<f32>>>,
+    monitor_sample_rate: u32,
+    monitor_channels: u16,
+
+    // Pause/resume fields
+    elapsed_before_pause: std::time::Duration,
+    is_paused: bool,
 }
 
 // SAFETY: cpal::Stream is !Send because it contains platform-specific handles
@@ -42,10 +59,16 @@ impl Recorder {
             device_sample_rate: 0,
             device_channels: 0,
             start_time: None,
+            monitor_stream: None,
+            monitor_buffer: Arc::new(Mutex::new(Vec::new())),
+            monitor_sample_rate: 0,
+            monitor_channels: 0,
+            elapsed_before_pause: std::time::Duration::ZERO,
+            is_paused: false,
         }
     }
 
-    pub fn start(&mut self) -> Result<(), String> {
+    pub fn start(&mut self, mode: CaptureMode) -> Result<(), String> {
         if self.stream.is_some() {
             return Err("Already recording".to_string());
         }
@@ -69,13 +92,18 @@ impl Recorder {
             self.device_channels,
         );
 
-        // Clear the buffer for a new recording
+        // Clear the buffers for a new recording
         if let Ok(mut buf) = self.buffer.lock() {
+            buf.clear();
+        }
+        if let Ok(mut buf) = self.monitor_buffer.lock() {
             buf.clear();
         }
 
         self.is_active.store(true, Ordering::SeqCst);
         self.rms_level.store(0f32.to_bits(), Ordering::SeqCst);
+        self.elapsed_before_pause = std::time::Duration::ZERO;
+        self.is_paused = false;
 
         let buffer = Arc::clone(&self.buffer);
         let is_active = Arc::clone(&self.is_active);
@@ -118,6 +146,54 @@ impl Recorder {
             .map_err(|e| format!("Failed to start stream: {}", e))?;
 
         self.stream = Some(stream);
+
+        // Start monitor stream if in dual-stream mode
+        if let CaptureMode::MicAndMonitor { monitor_device } = mode {
+            let monitor_config = monitor_device
+                .default_input_config()
+                .map_err(|e| format!("Failed to get monitor input config: {}", e))?;
+
+            self.monitor_sample_rate = monitor_config.sample_rate().0;
+            self.monitor_channels = monitor_config.channels();
+
+            eprintln!(
+                "[LCARS] recording: monitor device={:?}, rate={}, channels={}",
+                monitor_device
+                    .name()
+                    .unwrap_or_else(|_| "unknown".to_string()),
+                self.monitor_sample_rate,
+                self.monitor_channels,
+            );
+
+            let monitor_buffer = Arc::clone(&self.monitor_buffer);
+            let monitor_is_active = Arc::clone(&self.is_active);
+            let monitor_stream_config: cpal::StreamConfig = monitor_config.config();
+
+            let monitor_stream = monitor_device
+                .build_input_stream(
+                    &monitor_stream_config,
+                    move |data: &[f32], _: &cpal::InputCallbackInfo| {
+                        if !monitor_is_active.load(Ordering::SeqCst) {
+                            return;
+                        }
+                        if let Ok(mut buf) = monitor_buffer.lock() {
+                            buf.extend_from_slice(data);
+                        }
+                    },
+                    move |err| {
+                        eprintln!("[LCARS] recording: monitor stream error: {}", err);
+                    },
+                    None,
+                )
+                .map_err(|e| format!("Failed to build monitor input stream: {}", e))?;
+
+            monitor_stream
+                .play()
+                .map_err(|e| format!("Failed to start monitor stream: {}", e))?;
+
+            self.monitor_stream = Some(monitor_stream);
+        }
+
         self.start_time = Some(Instant::now());
 
         eprintln!("[LCARS] recording: stream started");
@@ -132,17 +208,23 @@ impl Recorder {
         // Signal the callback to stop capturing
         self.is_active.store(false, Ordering::SeqCst);
 
-        // Calculate duration from wall clock
-        let duration_ms = self
-            .start_time
-            .map(|t| t.elapsed().as_millis() as i64)
-            .unwrap_or(0);
+        // Calculate duration accounting for pauses
+        let mut total_elapsed = self.elapsed_before_pause;
+        if let Some(start) = self.start_time {
+            if !self.is_paused {
+                total_elapsed += start.elapsed();
+            }
+        }
+        let duration_ms = total_elapsed.as_millis() as i64;
 
-        // Drop the stream to stop the audio device
+        // Drop the streams to stop the audio devices
         self.stream = None;
+        self.monitor_stream = None;
         self.start_time = None;
+        self.elapsed_before_pause = std::time::Duration::ZERO;
+        self.is_paused = false;
 
-        // Take the buffer contents
+        // Take the mic buffer contents
         let raw_samples = if let Ok(mut buf) = self.buffer.lock() {
             std::mem::take(&mut *buf)
         } else {
@@ -159,11 +241,28 @@ impl Recorder {
             duration_ms
         );
 
-        // Downmix to mono
+        // Downmix mic to mono and resample to 16KHz
         let mono = downmix_to_mono(&raw_samples, self.device_channels);
+        let mic_audio = resample_to_16khz(&mono, self.device_sample_rate)?;
 
-        // Resample to 16KHz
-        let audio_data = resample_to_16khz(&mono, self.device_sample_rate)?;
+        // Check if we have monitor data
+        let monitor_samples = if let Ok(mut buf) = self.monitor_buffer.lock() {
+            std::mem::take(&mut *buf)
+        } else {
+            Vec::new()
+        };
+
+        let audio_data = if !monitor_samples.is_empty() {
+            eprintln!(
+                "[LCARS] recording: captured {} monitor raw samples",
+                monitor_samples.len()
+            );
+            let monitor_mono = downmix_to_mono(&monitor_samples, self.monitor_channels);
+            let monitor_audio = resample_to_16khz(&monitor_mono, self.monitor_sample_rate)?;
+            mix_streams(&mic_audio, &monitor_audio)
+        } else {
+            mic_audio
+        };
 
         eprintln!(
             "[LCARS] recording: processed to {} mono 16KHz samples",
@@ -182,6 +281,46 @@ impl Recorder {
     pub fn current_rms_level(&self) -> f32 {
         f32::from_bits(self.rms_level.load(Ordering::SeqCst))
     }
+
+    pub fn pause(&mut self) -> Result<(), String> {
+        if self.stream.is_none() {
+            return Err("Not recording".to_string());
+        }
+        if self.is_paused {
+            return Err("Already paused".to_string());
+        }
+        self.is_active.store(false, Ordering::SeqCst);
+        if let Some(start) = self.start_time {
+            self.elapsed_before_pause += start.elapsed();
+        }
+        self.start_time = None;
+        self.is_paused = true;
+        Ok(())
+    }
+
+    pub fn resume(&mut self) -> Result<(), String> {
+        if !self.is_paused {
+            return Err("Not paused".to_string());
+        }
+        self.is_active.store(true, Ordering::SeqCst);
+        self.start_time = Some(Instant::now());
+        self.is_paused = false;
+        Ok(())
+    }
+
+    pub fn is_paused(&self) -> bool {
+        self.is_paused
+    }
+
+    pub fn elapsed_seconds(&self) -> f64 {
+        let mut total = self.elapsed_before_pause;
+        if let Some(start) = self.start_time {
+            if !self.is_paused {
+                total += start.elapsed();
+            }
+        }
+        total.as_secs_f64()
+    }
 }
 
 /// Downmix interleaved multi-channel samples to mono by averaging all channels
@@ -195,6 +334,19 @@ pub fn downmix_to_mono(samples: &[f32], channels: u16) -> Vec<f32> {
     samples
         .chunks_exact(ch)
         .map(|frame| frame.iter().sum::<f32>() / ch as f32)
+        .collect()
+}
+
+/// Mix two audio streams by sample-wise averaging with clamping.
+pub fn mix_streams(mic: &[f32], monitor: &[f32]) -> Vec<f32> {
+    let len = mic.len().max(monitor.len());
+    (0..len)
+        .map(|i| match (mic.get(i).copied(), monitor.get(i).copied()) {
+            (Some(a), Some(b)) => ((a + b) / 2.0).clamp(-1.0, 1.0),
+            (Some(a), None) => a.clamp(-1.0, 1.0),
+            (None, Some(b)) => b.clamp(-1.0, 1.0),
+            (None, None) => 0.0,
+        })
         .collect()
 }
 
@@ -226,11 +378,7 @@ pub fn resample_to_16khz(mono: &[f32], source_rate: u32) -> Result<Vec<f32>, Str
     let chunk_size = 1024;
 
     let mut resampler = SincFixedIn::<f64>::new(
-        ratio,
-        2.0,
-        params,
-        chunk_size,
-        1, // mono
+        ratio, 2.0, params, chunk_size, 1, // mono
     )
     .map_err(|e| format!("Failed to create resampler: {}", e))?;
 
@@ -368,5 +516,115 @@ mod tests {
         };
         assert_eq!(result.audio_data, audio);
         assert_eq!(result.duration_ms, 1500);
+    }
+
+    // --- mix_streams tests ---
+
+    #[test]
+    fn test_mix_streams_equal_length() {
+        let mic = vec![0.4, 0.6, -0.2];
+        let monitor = vec![0.2, 0.4, 0.8];
+        let mixed = mix_streams(&mic, &monitor);
+        assert_eq!(mixed.len(), 3);
+        assert!((mixed[0] - 0.3).abs() < 1e-6); // (0.4+0.2)/2
+        assert!((mixed[1] - 0.5).abs() < 1e-6); // (0.6+0.4)/2
+        assert!((mixed[2] - 0.3).abs() < 1e-6); // (-0.2+0.8)/2
+    }
+
+    #[test]
+    fn test_mix_streams_mic_longer() {
+        let mic = vec![0.5, 0.5, 0.5];
+        let monitor = vec![0.5];
+        let mixed = mix_streams(&mic, &monitor);
+        assert_eq!(mixed.len(), 3);
+        assert!((mixed[0] - 0.5).abs() < 1e-6); // (0.5+0.5)/2
+        assert!((mixed[1] - 0.5).abs() < 1e-6); // mic only, full volume
+        assert!((mixed[2] - 0.5).abs() < 1e-6); // mic only, full volume
+    }
+
+    #[test]
+    fn test_mix_streams_monitor_longer() {
+        let mic = vec![0.5];
+        let monitor = vec![0.5, 0.5, 0.5];
+        let mixed = mix_streams(&mic, &monitor);
+        assert_eq!(mixed.len(), 3);
+        assert!((mixed[0] - 0.5).abs() < 1e-6);
+        assert!((mixed[1] - 0.5).abs() < 1e-6); // monitor only, full volume
+    }
+
+    #[test]
+    fn test_mix_streams_clamp() {
+        let mic = vec![0.9];
+        let monitor = vec![0.9];
+        let mixed = mix_streams(&mic, &monitor);
+        // (0.9+0.9)/2 = 0.9, should not exceed 1.0
+        assert!((mixed[0] - 0.9).abs() < 1e-6);
+
+        // Test extreme values
+        let mic2 = vec![1.5]; // already clipping
+        let monitor2 = vec![1.5];
+        let mixed2 = mix_streams(&mic2, &monitor2);
+        assert!(mixed2[0] <= 1.0);
+    }
+
+    #[test]
+    fn test_mix_streams_empty_both() {
+        let mixed = mix_streams(&[], &[]);
+        assert!(mixed.is_empty());
+    }
+
+    #[test]
+    fn test_mix_streams_one_empty() {
+        let mic = vec![0.6, 0.4];
+        let mixed = mix_streams(&mic, &[]);
+        assert_eq!(mixed.len(), 2);
+        assert!((mixed[0] - 0.6).abs() < 1e-6); // mic only, full volume
+        assert!((mixed[1] - 0.4).abs() < 1e-6); // mic only, full volume
+    }
+
+    #[test]
+    fn test_mix_streams_single_source_full_volume() {
+        let mic = vec![0.8, 0.6, 0.4];
+        let monitor = vec![0.8];
+        let mixed = mix_streams(&mic, &monitor);
+        assert_eq!(mixed.len(), 3);
+        assert!((mixed[0] - 0.8).abs() < 1e-6); // both present, averaged: (0.8+0.8)/2
+        assert!((mixed[1] - 0.6).abs() < 1e-6); // mic only, FULL volume
+        assert!((mixed[2] - 0.4).abs() < 1e-6); // mic only, FULL volume
+    }
+
+    #[test]
+    fn test_mix_streams_single_source_monitor_only_full_volume() {
+        let mic = vec![];
+        let monitor = vec![0.7, 0.5];
+        let mixed = mix_streams(&mic, &monitor);
+        assert_eq!(mixed.len(), 2);
+        assert!((mixed[0] - 0.7).abs() < 1e-6);
+        assert!((mixed[1] - 0.5).abs() < 1e-6);
+    }
+
+    // --- pause/resume tests ---
+
+    #[test]
+    fn test_recorder_initial_pause_state() {
+        let recorder = Recorder::new();
+        assert!(!recorder.is_paused());
+        assert!(recorder.elapsed_seconds() < 0.01);
+    }
+
+    #[test]
+    fn test_pause_not_recording() {
+        let mut recorder = Recorder::new();
+        let result = recorder.pause();
+        assert!(result.is_err());
+        assert_eq!(result.unwrap_err(), "Not recording");
+    }
+
+    #[test]
+    fn test_resume_not_paused() {
+        let mut recorder = Recorder::new();
+        let result = recorder.resume();
+        assert!(result.is_err());
+        assert_eq!(result.unwrap_err(), "Not paused");
     }
 }
