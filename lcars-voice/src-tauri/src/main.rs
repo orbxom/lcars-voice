@@ -305,6 +305,11 @@ fn main() {
         current_model_name: Mutex::new(String::new()),
     };
 
+    let socket_path = dirs::runtime_dir()
+        .unwrap_or_else(|| PathBuf::from("/tmp"))
+        .join("lcars-voice.sock");
+    let socket_path_for_setup = socket_path.clone();
+
     let hotkey = Shortcut::new(Some(Modifiers::SUPER | Modifiers::ALT), Code::KeyH);
     let hotkey_for_handler = hotkey.clone();
 
@@ -365,9 +370,7 @@ fn main() {
             }
 
             // Set up Unix socket toggle listener for external control
-            let socket_path = dirs::runtime_dir()
-                .unwrap_or_else(|| PathBuf::from("/tmp"))
-                .join("lcars-voice.sock");
+            let socket_path = socket_path_for_setup;
             // Clean up stale socket
             let _ = std::fs::remove_file(&socket_path);
 
@@ -437,6 +440,10 @@ fn main() {
         })
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
+
+    // Clean up socket on normal exit (SIGKILL/crashes handled by toggle script timeout)
+    eprintln!("[LCARS] Cleaning up socket on exit");
+    let _ = std::fs::remove_file(&socket_path);
 }
 
 #[cfg(test)]
