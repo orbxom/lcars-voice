@@ -28,7 +28,7 @@ pub fn transcribe(
     params.set_print_progress(false);
     params.set_print_realtime(false);
     params.set_print_timestamps(false);
-    params.set_n_threads(4);
+
 
     let mut state = ctx
         .create_state()
@@ -38,16 +38,15 @@ pub fn transcribe(
         .full(params, audio_data)
         .map_err(|e| format!("Whisper inference failed: {}", e))?;
 
-    let num_segments = state
-        .full_n_segments()
-        .map_err(|e| format!("Failed to get segment count: {}", e))?;
+    let num_segments = state.full_n_segments();
 
     let mut text = String::new();
     for i in 0..num_segments {
-        let segment = state
-            .full_get_segment_text(i)
-            .map_err(|e| format!("Failed to get segment {} text: {}", i, e))?;
-        text.push_str(&segment);
+        if let Some(segment) = state.get_segment(i) {
+            if let Ok(s) = segment.to_str() {
+                text.push_str(s);
+            }
+        }
     }
 
     let text = text.trim().to_string();
@@ -100,9 +99,12 @@ mod tests {
             return;
         }
 
+        let mut ctx_params = whisper_rs::WhisperContextParameters::default();
+        ctx_params.use_gpu(true);
+        ctx_params.flash_attn(true);
         let ctx = WhisperContext::new_with_params(
             model_file.to_str().unwrap(),
-            whisper_rs::WhisperContextParameters::default(),
+            ctx_params,
         )
         .expect("failed to load model");
 

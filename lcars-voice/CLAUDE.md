@@ -71,7 +71,7 @@ Rust crates (no external runtime dependencies):
 - `cpal` -- cross-platform audio capture (ALSA/PulseAudio on Linux, CoreAudio on macOS, WASAPI on Windows)
 - `rubato` -- audio resampling to 16KHz for Whisper
 - `whisper-rs` -- native whisper.cpp bindings (bundles whisper.cpp, requires C++ compiler at build time)
-- `tauri-plugin-notification` -- native desktop notifications
+- `tauri-plugin-notification` -- registered for capabilities (notifications sent via `notify-send` instead)
 - `reqwest` -- HTTP client for model download
 - `rusqlite` -- SQLite for transcription history
 
@@ -94,7 +94,14 @@ GGML model files are downloaded from HuggingFace on first use and cached locally
 
 ## Desktop Notifications
 
-Uses `tauri-plugin-notification` for native desktop notifications:
-- **Recording started**: "LCARS Voice" / "Recording started"
+Uses `notify-send` (shelled out via `std::process::Command`) for native desktop notifications. The Tauri notification plugin (`tauri-plugin-notification`) is still registered but not used for sending — its `notify-rust` backend silently drops notifications on some Linux setups.
+
+Notifications are sent on a background thread to avoid blocking the main/hotkey thread.
+
+- **Recording started**: "LCARS Voice" / "Recording started" (or "Meeting recording started")
+- **Transcribing**: "LCARS Voice" / "Recording stopped, transcribing..."
 - **Transcription complete**: "LCARS Voice" / First ~50 chars of transcribed text
 - **Transcription error**: "LCARS Voice" / "Error: {message}"
+- **Meeting saved**: "LCARS Voice" / "Meeting saved to {path}"
+
+System dependency: `notify-send` (from `libnotify-bin`, typically pre-installed on Linux desktops).

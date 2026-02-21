@@ -28,7 +28,6 @@ use tauri::{
     Emitter, Manager, State,
 };
 use tauri_plugin_global_shortcut::{Code, GlobalShortcutExt, Modifiers, Shortcut, ShortcutState};
-use tauri_plugin_notification::NotificationExt;
 use tauri_plugin_store::StoreExt;
 use whisper_rs::{WhisperContext, WhisperContextParameters};
 
@@ -96,7 +95,10 @@ fn ensure_whisper_context(
         let path = model_manager::model_path(model_name);
         let path_str = path.to_str().ok_or("Invalid model path")?;
         eprintln!("[LCARS] Loading whisper model: {}", model_name);
-        let ctx = WhisperContext::new_with_params(path_str, WhisperContextParameters::default())
+        let mut ctx_params = WhisperContextParameters::default();
+        ctx_params.use_gpu(true);
+        ctx_params.flash_attn(true);
+        let ctx = WhisperContext::new_with_params(path_str, ctx_params)
             .map_err(|e| format!("Failed to load model: {}", e))?;
         *ctx_guard = Some(ctx);
         *current = model_name.to_string();
@@ -297,6 +299,7 @@ fn handle_stop_and_transcribe(app: &tauri::AppHandle) {
             }
         } else {
             let _ = app_clone.emit("transcribing", ());
+            send_notification(&app_clone, "LCARS Voice", "Recording stopped, transcribing...");
 
             // Step 2: Ensure whisper model is loaded (may trigger download)
             if let Err(e) = ensure_whisper_context(&app_clone, &state, &model) {
@@ -386,11 +389,20 @@ fn get_current_model(app: &tauri::AppHandle) -> String {
     resolve_whisper_model(store_value, env_value)
 }
 
-fn send_notification(app: &tauri::AppHandle, title: &str, body: &str) {
-    match app.notification().builder().title(title).body(body).show() {
-        Ok(_) => eprintln!("[LCARS] notification: Sent '{}' - '{}'", title, body),
-        Err(e) => eprintln!("[LCARS] notification: Failed: {:?}", e),
-    }
+fn send_notification(_app: &tauri::AppHandle, title: &str, body: &str) {
+    let title = title.to_string();
+    let body = body.to_string();
+    std::thread::spawn(move || {
+        match std::process::Command::new("notify-send")
+            .arg(&title)
+            .arg(&body)
+            .status()
+        {
+            Ok(s) if s.success() => eprintln!("[LCARS] notification: Sent '{}' - '{}'", title, body),
+            Ok(s) => eprintln!("[LCARS] notification: notify-send exited with {}", s),
+            Err(e) => eprintln!("[LCARS] notification: Failed to run notify-send: {:?}", e),
+        }
+    });
 }
 
 #[tauri::command]
