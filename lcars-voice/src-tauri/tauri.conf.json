@@ -37,7 +37,7 @@
     ],
     "linux": {
       "deb": {
-        "depends": ["xclip"]
+        "depends": ["xclip", "libnotify-bin", "libwebkit2gtk-4.1-0", "libayatana-appindicator3-1"]
       }
     }
   }

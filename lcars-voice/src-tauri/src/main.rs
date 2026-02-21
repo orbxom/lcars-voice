@@ -96,8 +96,8 @@ fn ensure_whisper_context(
         let path_str = path.to_str().ok_or("Invalid model path")?;
         eprintln!("[LCARS] Loading whisper model: {}", model_name);
         let mut ctx_params = WhisperContextParameters::default();
-        ctx_params.use_gpu(true);
-        ctx_params.flash_attn(true);
+        ctx_params.use_gpu(cfg!(feature = "cuda"));
+        ctx_params.flash_attn(cfg!(feature = "cuda"));
         let ctx = WhisperContext::new_with_params(path_str, ctx_params)
             .map_err(|e| format!("Failed to load model: {}", e))?;
         *ctx_guard = Some(ctx);

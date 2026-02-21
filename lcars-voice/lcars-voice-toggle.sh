@@ -4,9 +4,20 @@
 # - If app running: toggle recording via Unix socket
 
 APP_NAME="lcars-voice"
-BINARY="$HOME/personal/claude-tools/lcars-voice/src-tauri/target/release/lcars-voice"
 SOCKET_PATH="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/lcars-voice.sock"
 LOG="/tmp/lcars-toggle.log"
+
+# Find binary: installed location, PATH, or dev build
+if command -v lcars-voice &>/dev/null; then
+    BINARY="$(command -v lcars-voice)"
+elif [[ -x "/usr/bin/lcars-voice" ]]; then
+    BINARY="/usr/bin/lcars-voice"
+elif [[ -x "$HOME/.local/bin/lcars-voice" ]]; then
+    BINARY="$HOME/.local/bin/lcars-voice"
+else
+    notify-send "LCARS Voice" "Binary not found. Run the install script." 2>/dev/null
+    exit 1
+fi
 
 start_app() {
     # Ensure display is set for GUI apps launched from GNOME keybindings

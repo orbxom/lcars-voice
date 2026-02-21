@@ -100,8 +100,8 @@ mod tests {
         }
 
         let mut ctx_params = whisper_rs::WhisperContextParameters::default();
-        ctx_params.use_gpu(true);
-        ctx_params.flash_attn(true);
+        ctx_params.use_gpu(cfg!(feature = "cuda"));
+        ctx_params.flash_attn(cfg!(feature = "cuda"));
         let ctx = WhisperContext::new_with_params(
             model_file.to_str().unwrap(),
             ctx_params,
