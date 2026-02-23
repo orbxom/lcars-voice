@@ -1,7 +1,7 @@
 import os
 import tempfile
 from unittest.mock import MagicMock, patch, call
-from src.slack_client import SlackThread, fetch_thread
+from src.slack_client import SlackThread, fetch_thread, download_files
 
 
 def _make_message(user="U123", text="hello", ts="1700000000.000001", files=None, bot_id=None):
@@ -161,3 +161,74 @@ def test_fetch_thread_caches_user_lookups():
     thread = fetch_thread(client, "C123", "1700000000.000000")
 
     assert client.users_info.call_count == 1
+
+
+def test_download_files_saves_images(tmp_path):
+    """Files from messages are downloaded to the attachments directory."""
+    messages = [
+        _make_message(
+            ts="1700000000.000000",
+            files=[{"name": "screenshot.png", "url_private_download": "https://files.slack.com/files-pri/T123/screenshot.png", "mimetype": "image/png"}],
+        ),
+    ]
+    with patch("src.slack_client.requests") as mock_requests:
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.content = b"fake-png-data"
+        mock_resp.raise_for_status = MagicMock()
+        mock_requests.get.return_value = mock_resp
+
+        file_map = download_files(messages, str(tmp_path), "xoxp-test")
+
+    saved_file = tmp_path / "screenshot.png"
+    assert saved_file.exists()
+    assert saved_file.read_bytes() == b"fake-png-data"
+    assert file_map["1700000000.000000"][0]["local_path"] == "screenshot.png"
+
+
+def test_download_files_handles_duplicate_names(tmp_path):
+    """Two files with the same name get deduplicated."""
+    messages = [
+        _make_message(
+            ts="1700000000.000000",
+            files=[
+                {"name": "image.png", "url_private_download": "https://files.slack.com/1", "mimetype": "image/png"},
+                {"name": "image.png", "url_private_download": "https://files.slack.com/2", "mimetype": "image/png"},
+            ],
+        ),
+    ]
+    with patch("src.slack_client.requests") as mock_requests:
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.content = b"data"
+        mock_resp.raise_for_status = MagicMock()
+        mock_requests.get.return_value = mock_resp
+
+        file_map = download_files(messages, str(tmp_path), "xoxp-test")
+
+    assert (tmp_path / "image.png").exists()
+    assert (tmp_path / "image_1.png").exists()
+
+
+def test_download_files_failed_download_returns_placeholder(tmp_path):
+    """Failed download records error but doesn't crash."""
+    messages = [
+        _make_message(
+            ts="1700000000.000000",
+            files=[{"name": "broken.pdf", "url_private_download": "https://files.slack.com/broken", "mimetype": "application/pdf"}],
+        ),
+    ]
+    with patch("src.slack_client.requests") as mock_requests:
+        mock_requests.get.side_effect = Exception("network error")
+
+        file_map = download_files(messages, str(tmp_path), "xoxp-test")
+
+    assert file_map["1700000000.000000"][0]["error"] == "network error"
+
+
+def test_download_files_no_files_returns_empty(tmp_path):
+    """Messages with no files produce empty file_map."""
+    messages = [_make_message(ts="1700000000.000000")]
+
+    file_map = download_files(messages, str(tmp_path), "xoxp-test")
+    assert file_map == {}
