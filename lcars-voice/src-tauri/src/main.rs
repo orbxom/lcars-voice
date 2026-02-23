@@ -169,17 +169,12 @@ fn handle_start_recording(app: &tauri::AppHandle) -> Result<(), String> {
     let (capture_mode, session) = if mode == RecordingMode::Meeting {
         let session = MeetingSession::new(None)?;
         eprintln!("[LCARS] Meeting recording to {:?}", session.output_dir);
-        let cm = match audio_sources::find_monitor_device() {
-            Ok(monitor) => recording::CaptureMode::MicAndMonitor {
-                monitor_device: monitor,
-            },
-            Err(e) => {
-                eprintln!(
-                    "[LCARS] No monitor source found ({}), recording mic only",
-                    e
-                );
-                recording::CaptureMode::MicOnly
-            }
+        let cm = if audio_sources::is_monitor_capture_available() {
+            eprintln!("[LCARS] Monitor capture available (parec found)");
+            recording::CaptureMode::MicAndMonitor
+        } else {
+            eprintln!("[LCARS] No monitor capture available (parec not found), recording mic only");
+            recording::CaptureMode::MicOnly
         };
         (cm, Some(session))
     } else {

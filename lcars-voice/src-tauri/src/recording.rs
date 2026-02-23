@@ -12,7 +12,7 @@ use std::time::Instant;
 
 pub enum CaptureMode {
     MicOnly,
-    MicAndMonitor { monitor_device: cpal::Device },
+    MicAndMonitor,
 }
 
 pub struct Recorder {
@@ -24,8 +24,9 @@ pub struct Recorder {
     device_channels: u16,
     start_time: Option<Instant>,
 
-    // Dual-stream fields
-    monitor_stream: Option<cpal::Stream>,
+    // Monitor capture via parec subprocess
+    monitor_process: Option<std::process::Child>,
+    monitor_reader_thread: Option<std::thread::JoinHandle<()>>,
     monitor_buffer: Arc<Mutex<Vec<f32>>>,
     monitor_sample_rate: u32,
     monitor_channels: u16,
@@ -59,13 +60,112 @@ impl Recorder {
             device_sample_rate: 0,
             device_channels: 0,
             start_time: None,
-            monitor_stream: None,
+            monitor_process: None,
+            monitor_reader_thread: None,
             monitor_buffer: Arc::new(Mutex::new(Vec::new())),
             monitor_sample_rate: 0,
             monitor_channels: 0,
             elapsed_before_pause: std::time::Duration::ZERO,
             is_paused: false,
         }
+    }
+
+    /// Start capturing monitor audio via parec subprocess.
+    ///
+    /// Detects the default sink's monitor source via `pactl` and spawns `parec`
+    /// to capture from it. A reader thread converts the raw float32 LE PCM from
+    /// stdout into f32 samples in `monitor_buffer`.
+    ///
+    /// Note: We resolve the monitor source name explicitly rather than using
+    /// `@DEFAULT_MONITOR@` because the latter doesn't work on some PipeWire setups.
+    fn start_parec_monitor(&mut self) -> Result<(), String> {
+        use crate::audio_sources;
+
+        const PAREC_RATE: u32 = 48000;
+        const PAREC_CHANNELS: u16 = 1;
+
+        let monitor_source = audio_sources::get_default_monitor_source()?;
+        eprintln!("[LCARS] recording: using monitor source: {}", monitor_source);
+
+        self.monitor_sample_rate = PAREC_RATE;
+        self.monitor_channels = PAREC_CHANNELS;
+
+        let mut child = std::process::Command::new("parec")
+            .args([
+                "--format=float32le",
+                "--channels=1",
+                "--rate=48000",
+                "-d",
+                &monitor_source,
+            ])
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .map_err(|e| {
+                format!(
+                    "Failed to start parec: {}. Is pulseaudio-utils installed?",
+                    e
+                )
+            })?;
+
+        eprintln!(
+            "[LCARS] recording: parec started (pid={}), capturing @DEFAULT_MONITOR@ at {}Hz mono",
+            child.id(),
+            PAREC_RATE,
+        );
+
+        let stdout = child
+            .stdout
+            .take()
+            .ok_or_else(|| "Failed to capture parec stdout".to_string())?;
+
+        let monitor_buffer = Arc::clone(&self.monitor_buffer);
+        let monitor_is_active = Arc::clone(&self.is_active);
+
+        let reader_thread = std::thread::spawn(move || {
+            use std::io::Read;
+            let mut reader = std::io::BufReader::with_capacity(16384, stdout);
+            let mut byte_buf = vec![0u8; 4096 * 4]; // 4096 floats per read
+            let mut total_bytes: usize = 0;
+            let mut total_samples: usize = 0;
+            let mut discarded_samples: usize = 0;
+
+            loop {
+                let bytes_read = match reader.read(&mut byte_buf) {
+                    Ok(0) => break,
+                    Ok(n) => n,
+                    Err(e) => {
+                        eprintln!("[LCARS] recording: parec read error: {}", e);
+                        break;
+                    }
+                };
+
+                total_bytes += bytes_read;
+                let samples = bytes_to_f32_samples(&byte_buf[..bytes_read]);
+
+                // When paused, drain pipe to prevent parec blocking but discard samples
+                if !monitor_is_active.load(Ordering::SeqCst) {
+                    discarded_samples += samples.len();
+                    continue;
+                }
+
+                if !samples.is_empty() {
+                    total_samples += samples.len();
+                    if let Ok(mut buf) = monitor_buffer.lock() {
+                        buf.extend_from_slice(&samples);
+                    }
+                }
+            }
+            eprintln!(
+                "[LCARS] recording: parec reader exiting: total_bytes={}, total_samples={}, discarded={}",
+                total_bytes, total_samples, discarded_samples
+            );
+        });
+
+        self.monitor_process = Some(child);
+        self.monitor_reader_thread = Some(reader_thread);
+
+        Ok(())
     }
 
     pub fn start(&mut self, mode: CaptureMode) -> Result<(), String> {
@@ -147,51 +247,14 @@ impl Recorder {
 
         self.stream = Some(stream);
 
-        // Start monitor stream if in dual-stream mode
-        if let CaptureMode::MicAndMonitor { monitor_device } = mode {
-            let monitor_config = monitor_device
-                .default_input_config()
-                .map_err(|e| format!("Failed to get monitor input config: {}", e))?;
-
-            self.monitor_sample_rate = monitor_config.sample_rate().0;
-            self.monitor_channels = monitor_config.channels();
-
-            eprintln!(
-                "[LCARS] recording: monitor device={:?}, rate={}, channels={}",
-                monitor_device
-                    .name()
-                    .unwrap_or_else(|_| "unknown".to_string()),
-                self.monitor_sample_rate,
-                self.monitor_channels,
-            );
-
-            let monitor_buffer = Arc::clone(&self.monitor_buffer);
-            let monitor_is_active = Arc::clone(&self.is_active);
-            let monitor_stream_config: cpal::StreamConfig = monitor_config.config();
-
-            let monitor_stream = monitor_device
-                .build_input_stream(
-                    &monitor_stream_config,
-                    move |data: &[f32], _: &cpal::InputCallbackInfo| {
-                        if !monitor_is_active.load(Ordering::SeqCst) {
-                            return;
-                        }
-                        if let Ok(mut buf) = monitor_buffer.lock() {
-                            buf.extend_from_slice(data);
-                        }
-                    },
-                    move |err| {
-                        eprintln!("[LCARS] recording: monitor stream error: {}", err);
-                    },
-                    None,
-                )
-                .map_err(|e| format!("Failed to build monitor input stream: {}", e))?;
-
-            monitor_stream
-                .play()
-                .map_err(|e| format!("Failed to start monitor stream: {}", e))?;
-
-            self.monitor_stream = Some(monitor_stream);
+        // Start monitor capture via parec if in dual-stream mode
+        if let CaptureMode::MicAndMonitor = mode {
+            if let Err(e) = self.start_parec_monitor() {
+                eprintln!(
+                    "[LCARS] recording: monitor capture failed ({}), continuing mic-only",
+                    e
+                );
+            }
         }
 
         self.start_time = Some(Instant::now());
@@ -219,7 +282,17 @@ impl Recorder {
 
         // Drop the streams to stop the audio devices
         self.stream = None;
-        self.monitor_stream = None;
+
+        // Kill the parec subprocess and join the reader thread
+        if let Some(mut child) = self.monitor_process.take() {
+            let _ = child.kill();
+            let _ = child.wait();
+            eprintln!("[LCARS] recording: parec process terminated");
+        }
+        if let Some(thread) = self.monitor_reader_thread.take() {
+            let _ = thread.join();
+            eprintln!("[LCARS] recording: parec reader thread joined");
+        }
         self.start_time = None;
         self.elapsed_before_pause = std::time::Duration::ZERO;
         self.is_paused = false;
@@ -253,14 +326,33 @@ impl Recorder {
         };
 
         let audio_data = if !monitor_samples.is_empty() {
+            // Diagnostic stats for monitor buffer
+            let mon_min = monitor_samples.iter().cloned().fold(f32::INFINITY, f32::min);
+            let mon_max = monitor_samples.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
+            let mon_rms = (monitor_samples.iter().map(|s| s * s).sum::<f32>() / monitor_samples.len() as f32).sqrt();
             eprintln!(
-                "[LCARS] recording: captured {} monitor raw samples",
-                monitor_samples.len()
+                "[LCARS] recording: monitor raw: count={}, min={:.6}, max={:.6}, rms={:.6}",
+                monitor_samples.len(), mon_min, mon_max, mon_rms
             );
+            // Mic stats too
+            let mic_rms = (mic_audio.iter().map(|s| s * s).sum::<f32>() / mic_audio.len() as f32).sqrt();
+            eprintln!(
+                "[LCARS] recording: mic resampled: count={}, rms={:.6}",
+                mic_audio.len(), mic_rms
+            );
+
             let monitor_mono = downmix_to_mono(&monitor_samples, self.monitor_channels);
             let monitor_audio = resample_to_16khz(&monitor_mono, self.monitor_sample_rate)?;
+
+            let mon_res_rms = (monitor_audio.iter().map(|s| s * s).sum::<f32>() / monitor_audio.len() as f32).sqrt();
+            eprintln!(
+                "[LCARS] recording: monitor resampled: count={}, rms={:.6}",
+                monitor_audio.len(), mon_res_rms
+            );
+
             mix_streams(&mic_audio, &monitor_audio)
         } else {
+            eprintln!("[LCARS] recording: NO monitor samples captured!");
             mic_audio
         };
 
@@ -323,6 +415,23 @@ impl Recorder {
     }
 }
 
+/// Convert raw little-endian bytes to f32 samples.
+/// Incomplete trailing bytes (less than 4) are discarded.
+pub fn bytes_to_f32_samples(bytes: &[u8]) -> Vec<f32> {
+    let complete_samples = bytes.len() / 4;
+    (0..complete_samples)
+        .map(|i| {
+            let offset = i * 4;
+            f32::from_le_bytes([
+                bytes[offset],
+                bytes[offset + 1],
+                bytes[offset + 2],
+                bytes[offset + 3],
+            ])
+        })
+        .collect()
+}
+
 /// Downmix interleaved multi-channel samples to mono by averaging all channels
 /// per frame. For mono input (channels == 1), returns the input unchanged.
 pub fn downmix_to_mono(samples: &[f32], channels: u16) -> Vec<f32> {
@@ -337,12 +446,12 @@ pub fn downmix_to_mono(samples: &[f32], channels: u16) -> Vec<f32> {
         .collect()
 }
 
-/// Mix two audio streams by sample-wise averaging with clamping.
+/// Mix two audio streams by sample-wise summing with clamping.
 pub fn mix_streams(mic: &[f32], monitor: &[f32]) -> Vec<f32> {
     let len = mic.len().max(monitor.len());
     (0..len)
         .map(|i| match (mic.get(i).copied(), monitor.get(i).copied()) {
-            (Some(a), Some(b)) => ((a + b) / 2.0).clamp(-1.0, 1.0),
+            (Some(a), Some(b)) => (a + b).clamp(-1.0, 1.0),
             (Some(a), None) => a.clamp(-1.0, 1.0),
             (None, Some(b)) => b.clamp(-1.0, 1.0),
             (None, None) => 0.0,
@@ -526,9 +635,9 @@ mod tests {
         let monitor = vec![0.2, 0.4, 0.8];
         let mixed = mix_streams(&mic, &monitor);
         assert_eq!(mixed.len(), 3);
-        assert!((mixed[0] - 0.3).abs() < 1e-6); // (0.4+0.2)/2
-        assert!((mixed[1] - 0.5).abs() < 1e-6); // (0.6+0.4)/2
-        assert!((mixed[2] - 0.3).abs() < 1e-6); // (-0.2+0.8)/2
+        assert!((mixed[0] - 0.6).abs() < 1e-6); // 0.4+0.2
+        assert!((mixed[1] - 1.0).abs() < 1e-6); // 0.6+0.4
+        assert!((mixed[2] - 0.6).abs() < 1e-6); // -0.2+0.8
     }
 
     #[test]
@@ -537,9 +646,9 @@ mod tests {
         let monitor = vec![0.5];
         let mixed = mix_streams(&mic, &monitor);
         assert_eq!(mixed.len(), 3);
-        assert!((mixed[0] - 0.5).abs() < 1e-6); // (0.5+0.5)/2
-        assert!((mixed[1] - 0.5).abs() < 1e-6); // mic only, full volume
-        assert!((mixed[2] - 0.5).abs() < 1e-6); // mic only, full volume
+        assert!((mixed[0] - 1.0).abs() < 1e-6); // 0.5+0.5, clamped
+        assert!((mixed[1] - 0.5).abs() < 1e-6); // mic only
+        assert!((mixed[2] - 0.5).abs() < 1e-6); // mic only
     }
 
     #[test]
@@ -548,8 +657,8 @@ mod tests {
         let monitor = vec![0.5, 0.5, 0.5];
         let mixed = mix_streams(&mic, &monitor);
         assert_eq!(mixed.len(), 3);
-        assert!((mixed[0] - 0.5).abs() < 1e-6);
-        assert!((mixed[1] - 0.5).abs() < 1e-6); // monitor only, full volume
+        assert!((mixed[0] - 1.0).abs() < 1e-6); // 0.5+0.5, clamped
+        assert!((mixed[1] - 0.5).abs() < 1e-6); // monitor only
     }
 
     #[test]
@@ -557,8 +666,8 @@ mod tests {
         let mic = vec![0.9];
         let monitor = vec![0.9];
         let mixed = mix_streams(&mic, &monitor);
-        // (0.9+0.9)/2 = 0.9, should not exceed 1.0
-        assert!((mixed[0] - 0.9).abs() < 1e-6);
+        // 0.9+0.9 = 1.8, clamped to 1.0
+        assert!((mixed[0] - 1.0).abs() < 1e-6);
 
         // Test extreme values
         let mic2 = vec![1.5]; // already clipping
@@ -588,9 +697,9 @@ mod tests {
         let monitor = vec![0.8];
         let mixed = mix_streams(&mic, &monitor);
         assert_eq!(mixed.len(), 3);
-        assert!((mixed[0] - 0.8).abs() < 1e-6); // both present, averaged: (0.8+0.8)/2
-        assert!((mixed[1] - 0.6).abs() < 1e-6); // mic only, FULL volume
-        assert!((mixed[2] - 0.4).abs() < 1e-6); // mic only, FULL volume
+        assert!((mixed[0] - 1.0).abs() < 1e-6); // both present, summed: 0.8+0.8 = 1.6, clamped
+        assert!((mixed[1] - 0.6).abs() < 1e-6); // mic only
+        assert!((mixed[2] - 0.4).abs() < 1e-6); // mic only
     }
 
     #[test]
@@ -604,6 +713,50 @@ mod tests {
     }
 
     // --- pause/resume tests ---
+
+    // --- bytes_to_f32_samples tests ---
+
+    #[test]
+    fn test_bytes_to_f32_samples_single() {
+        let bytes = 1.0f32.to_le_bytes();
+        let samples = bytes_to_f32_samples(&bytes);
+        assert_eq!(samples.len(), 1);
+        assert!((samples[0] - 1.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn test_bytes_to_f32_samples_multiple() {
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(&0.5f32.to_le_bytes());
+        bytes.extend_from_slice(&(-0.25f32).to_le_bytes());
+        bytes.extend_from_slice(&0.0f32.to_le_bytes());
+        let samples = bytes_to_f32_samples(&bytes);
+        assert_eq!(samples.len(), 3);
+        assert!((samples[0] - 0.5).abs() < 1e-6);
+        assert!((samples[1] - (-0.25)).abs() < 1e-6);
+        assert!((samples[2] - 0.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn test_bytes_to_f32_samples_partial() {
+        let mut bytes = vec![0u8; 5];
+        bytes[..4].copy_from_slice(&0.75f32.to_le_bytes());
+        let samples = bytes_to_f32_samples(&bytes);
+        assert_eq!(samples.len(), 1);
+        assert!((samples[0] - 0.75).abs() < 1e-6);
+    }
+
+    #[test]
+    fn test_bytes_to_f32_samples_empty() {
+        let samples = bytes_to_f32_samples(&[]);
+        assert!(samples.is_empty());
+    }
+
+    #[test]
+    fn test_bytes_to_f32_samples_too_short() {
+        let samples = bytes_to_f32_samples(&[0, 1, 2]);
+        assert!(samples.is_empty());
+    }
 
     #[test]
     fn test_recorder_initial_pause_state() {
