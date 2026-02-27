@@ -1,15 +1,16 @@
 #!/bin/bash
 set -e
 
-# Process local zoom-recorder output into per-ticket transcript files.
+# Process local recording output into per-session transcript files.
 #
 # Usage: process-local-recordings.sh [date] [output-dir]
 #   date:       Optional date filter (YYYY-MM-DD). Defaults to today.
 #   output-dir: Where to write .md files. Defaults to $SCRIPT_DIR/recordings
 #
-# Finds recording directories in RECORDINGS_SOURCE (default ~/zoom-recordings/)
-# matching the given date, transcribes each with whisper, and segments the
-# transcript by JIRA ticket marks from timestamps.json.
+# Finds recording directories in RECORDINGS_SOURCE
+# (default ~/.local/share/lcars-voice/recordings/) matching the given date,
+# transcribes each with whisper, and segments the transcript. If timestamps.json
+# exists (from older recordings), it will be used for per-ticket segmentation.
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
@@ -19,7 +20,7 @@ if [[ -f "$SCRIPT_DIR/.env" ]]; then
 fi
 
 # Configuration
-RECORDINGS_SOURCE="${RECORDINGS_SOURCE:-$HOME/zoom-recordings}"
+RECORDINGS_SOURCE="${RECORDINGS_SOURCE:-$HOME/.local/share/lcars-voice/recordings}"
 WHISPER_MODEL="${WHISPER_MODEL:-large-v3}"
 PYTHON_ENV="${PYTHON_ENV:-$HOME/voice-to-text-env/bin/python}"
 WHISPER_SCRIPT="$SCRIPT_DIR/whisper-wrapper.py"
@@ -77,12 +78,6 @@ for recording_dir in "${matching_dirs[@]}"; do
 
     echo "Processing: $dir_name"
 
-    # Check for timestamps.json
-    if [[ ! -f "$timestamps_file" ]]; then
-        echo "  Warning: No timestamps.json found, skipping" >&2
-        continue
-    fi
-
     # Transcribe with whisper
     echo "  Transcribing with whisper ($WHISPER_MODEL)..."
     whisper_output_file=$(mktemp /tmp/whisper-output-XXXXXX.json)
@@ -112,12 +107,14 @@ for recording_dir in "${matching_dirs[@]}"; do
     # Extract date from directory name (YYYY-MM-DD from YYYY-MM-DD-HHMMSS)
     recording_date=$(echo "$dir_name" | cut -d'-' -f1-3)
 
-    # Segment transcript by JIRA ticket marks
-    echo "  Segmenting by ticket marks..."
+    # Segment transcript (uses timestamps.json for per-ticket split if available)
+    echo "  Segmenting transcript..."
+    segment_args=("$segment_input" "$OUTPUT_DIR")
+    if [[ -f "$timestamps_file" ]]; then
+        segment_args+=("$timestamps_file")
+    fi
     "$PYTHON_ENV" "$SEGMENT_SCRIPT" \
-        "$segment_input" \
-        "$timestamps_file" \
-        "$OUTPUT_DIR" \
+        "${segment_args[@]}" \
         --source "$dir_name/audio.wav" \
         --date "$recording_date"
 

@@ -7,7 +7,6 @@ class LCARSVoiceInterface {
     this.animationId = null;
     this.idleAnimationId = null;
     this.currentMode = 'VoiceNote';
-    this.isPaused = false;
     this.timerInterval = null;
 
     this.elements = {
@@ -24,15 +23,10 @@ class LCARSVoiceInterface {
       modelDropdown: document.getElementById('model-dropdown'),
       modelOptions: document.querySelectorAll('.model-option'),
       appVersion: document.getElementById('app-version'),
-      pauseBtn: document.getElementById('pause-btn'),
       modeBtn: document.getElementById('mode-btn'),
       modeValue: document.getElementById('mode-value'),
       modeDropdown: document.getElementById('mode-dropdown'),
       modeOptions: document.querySelectorAll('.mode-option'),
-      jiraInput: document.getElementById('jira-input'),
-      markBtn: document.getElementById('mark-btn'),
-      marksList: document.getElementById('marks-list'),
-      meetingControls: document.getElementById('meeting-controls'),
     };
 
     this.waveformCtx = this.elements.waveform.getContext('2d');
@@ -161,14 +155,6 @@ class LCARSVoiceInterface {
       });
     });
 
-    // Pause button
-    this.elements.pauseBtn?.addEventListener('click', () => this.togglePause());
-
-    // JIRA mark
-    this.elements.markBtn?.addEventListener('click', () => this.addTimestampMark());
-    this.elements.jiraInput?.addEventListener('keydown', (e) => {
-      if (e.key === 'Enter') this.addTimestampMark();
-    });
   }
 
   bindTauriEvents() {
@@ -233,31 +219,11 @@ class LCARSVoiceInterface {
     listen('meeting-saved', (event) => {
       console.log('[LCARS] event: Meeting saved to', event.payload);
       this.isRecording = false;
-      this.isPaused = false;
       this.stopElapsedTimer();
       this.stopWaveformAnimation();
-      this.elements.meetingControls.style.display = 'none';
-      this.elements.pauseBtn.querySelector('.button-text').textContent = 'PAUSE';
       this.updateUI('ready');
       this.startIdleWaveform();
       this.flashStatus('MEETING SAVED');
-    });
-
-    listen('meeting-paused', () => {
-      console.log('[LCARS] event: Meeting paused');
-      this.isPaused = true;
-      this.elements.pauseBtn.querySelector('.button-text').textContent = 'RESUME';
-      this.elements.pauseBtn.classList.add('paused');
-      this.elements.statusText.textContent = 'PAUSED';
-      this.stopWaveformAnimation();
-    });
-
-    listen('meeting-resumed', () => {
-      console.log('[LCARS] event: Meeting resumed');
-      this.isPaused = false;
-      this.elements.pauseBtn.querySelector('.button-text').textContent = 'PAUSE';
-      this.elements.pauseBtn.classList.remove('paused');
-      this.startWaveformAnimation();
     });
 
     listen('model-download-progress', (event) => {
@@ -301,12 +267,6 @@ class LCARSVoiceInterface {
     this.elements.modeOptions.forEach(opt => {
       opt.classList.toggle('selected', opt.dataset.mode === this.currentMode);
     });
-    // Show/hide pause button based on mode
-    if (this.currentMode === 'Meeting') {
-      this.elements.pauseBtn.style.display = '';
-    } else {
-      this.elements.pauseBtn.style.display = 'none';
-    }
   }
 
   toggleModeDropdown() {
@@ -335,66 +295,10 @@ class LCARSVoiceInterface {
     }
   }
 
-  async togglePause() {
-    if (!this.isRecording) return;
-    try {
-      if (this.isPaused) {
-        await window.__TAURI__.core.invoke('resume_recording');
-      } else {
-        await window.__TAURI__.core.invoke('pause_recording');
-      }
-    } catch (e) {
-      console.error('[LCARS] app: Pause/resume failed:', e);
-      this.flashStatus('ERROR: ' + e);
-    }
-  }
-
-  async addTimestampMark() {
-    if (!this.isRecording || this.isPaused) return;
-    const ticket = this.elements.jiraInput.value.trim() || null;
-    try {
-      await window.__TAURI__.core.invoke('add_timestamp_mark', { ticket, note: null });
-      this.elements.jiraInput.value = '';
-      await this.loadMarks();
-    } catch (e) {
-      console.error('[LCARS] app: Failed to add timestamp mark:', e);
-    }
-  }
-
-  async loadMarks() {
-    try {
-      const marks = await window.__TAURI__.core.invoke('get_timestamp_marks');
-      this.renderMarks(marks);
-    } catch (e) {
-      console.error('[LCARS] app: Failed to load marks:', e);
-    }
-  }
-
-  renderMarks(marks) {
-    this.elements.marksList.innerHTML = '';
-    marks.forEach(mark => {
-      const item = document.createElement('div');
-      item.className = 'mark-item';
-
-      const timeSpan = document.createElement('span');
-      timeSpan.className = 'mark-time';
-      timeSpan.textContent = mark.time;
-      item.appendChild(timeSpan);
-
-      const ticketSpan = document.createElement('span');
-      ticketSpan.className = 'mark-ticket';
-      ticketSpan.textContent = mark.ticket ? ` \u2192 ${mark.ticket}` : '';
-      item.appendChild(ticketSpan);
-
-      this.elements.marksList.appendChild(item);
-    });
-    this.elements.marksList.scrollTop = this.elements.marksList.scrollHeight;
-  }
-
   startElapsedTimer() {
     this.stopElapsedTimer();
     this.timerInterval = setInterval(async () => {
-      if (!this.isRecording || this.isPaused) return;
+      if (!this.isRecording) return;
       try {
         const elapsed = await window.__TAURI__.core.invoke('get_elapsed_time');
         const total = Math.floor(elapsed);
@@ -457,8 +361,6 @@ class LCARSVoiceInterface {
         if (this.currentMode === 'Meeting') {
           this.elements.statusText.textContent = '00:00:00';
           this.elements.recordBtn.querySelector('.button-text').textContent = 'STOP MEETING';
-          this.elements.meetingControls.style.display = 'block';
-          this.elements.pauseBtn.style.display = '';
           this.startElapsedTimer();
         } else {
           this.elements.statusText.textContent = 'RECORDING';
@@ -481,7 +383,6 @@ class LCARSVoiceInterface {
         } else {
           this.elements.recordBtn.querySelector('.button-text').textContent = 'RECORD';
         }
-        this.elements.meetingControls.style.display = 'none';
         this.stopElapsedTimer();
         break;
     }

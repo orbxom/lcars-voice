@@ -1,72 +1,19 @@
 use chrono::{DateTime, Duration, Utc};
-use serde::{Deserialize, Serialize};
-use std::path::{Path, PathBuf};
-
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct TimestampMark {
-    pub time: String,
-    pub seconds: u64,
-    pub ticket: Option<String>,
-    pub note: Option<String>,
-}
-
-pub struct TimestampManager {
-    marks: Vec<TimestampMark>,
-}
+use std::path::PathBuf;
 
 pub struct MeetingSession {
     pub output_dir: PathBuf,
     pub start_time: DateTime<Utc>,
-    pub timestamps: TimestampManager,
-}
-
-fn format_elapsed(seconds: u64) -> String {
-    let h = seconds / 3600;
-    let m = (seconds % 3600) / 60;
-    let s = seconds % 60;
-    format!("{:02}:{:02}:{:02}", h, m, s)
-}
-
-impl TimestampManager {
-    pub fn new() -> Self {
-        Self { marks: Vec::new() }
-    }
-
-    pub fn add_mark(
-        &mut self,
-        elapsed_seconds: u64,
-        ticket: Option<String>,
-        note: Option<String>,
-    ) -> TimestampMark {
-        let mark = TimestampMark {
-            time: format_elapsed(elapsed_seconds),
-            seconds: elapsed_seconds,
-            ticket,
-            note,
-        };
-        self.marks.push(mark.clone());
-        mark
-    }
-
-    pub fn get_marks(&self) -> &[TimestampMark] {
-        &self.marks
-    }
-
-    pub fn save(&self, path: &Path) -> Result<(), String> {
-        let data = serde_json::json!({ "marks": self.marks });
-        let content =
-            serde_json::to_string_pretty(&data).map_err(|e| format!("JSON error: {}", e))?;
-        std::fs::write(path, content).map_err(|e| format!("Write error: {}", e))
-    }
 }
 
 impl MeetingSession {
     pub fn new(output_base: Option<&str>) -> Result<Self, String> {
         let base = match output_base {
             Some(p) => PathBuf::from(p),
-            None => dirs::home_dir()
-                .ok_or("Cannot determine home directory")?
-                .join("zoom-recordings"),
+            None => dirs::data_local_dir()
+                .ok_or("Cannot determine data local directory")?
+                .join("lcars-voice")
+                .join("recordings"),
         };
 
         let now = Utc::now();
@@ -79,7 +26,6 @@ impl MeetingSession {
         Ok(Self {
             output_dir,
             start_time: now,
-            timestamps: TimestampManager::new(),
         })
     }
 
@@ -126,18 +72,13 @@ impl MeetingSession {
         let meta_path = self.output_dir.join("metadata.json");
         std::fs::write(meta_path, content).map_err(|e| format!("Write error: {}", e))
     }
-
-    pub fn save_timestamps(&self) -> Result<(), String> {
-        let ts_path = self.output_dir.join("timestamps.json");
-        self.timestamps.save(&ts_path)
-    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::fs;
-
+    use std::path::Path;
     use std::sync::atomic::{AtomicU64, Ordering as AtomicOrdering};
 
     fn test_dir() -> PathBuf {
@@ -154,68 +95,22 @@ mod tests {
     }
 
     #[test]
-    fn test_format_elapsed_zero() {
-        assert_eq!(format_elapsed(0), "00:00:00");
+    fn test_meeting_session_no_timestamps_file() {
+        let base = test_dir();
+        let session = MeetingSession::new(Some(base.to_str().unwrap())).unwrap();
+        // After creating a session, no timestamps.json should exist
+        assert!(!session.output_dir.join("timestamps.json").exists());
+        cleanup(&base);
     }
 
     #[test]
-    fn test_format_elapsed_minutes() {
-        assert_eq!(format_elapsed(323), "00:05:23");
-    }
-
-    #[test]
-    fn test_format_elapsed_hours() {
-        assert_eq!(format_elapsed(3661), "01:01:01");
-    }
-
-    #[test]
-    fn test_timestamp_mark_with_ticket() {
-        let mut mgr = TimestampManager::new();
-        let mark = mgr.add_mark(323, Some("GT-1234".to_string()), None);
-        assert_eq!(mark.time, "00:05:23");
-        assert_eq!(mark.seconds, 323);
-        assert_eq!(mark.ticket, Some("GT-1234".to_string()));
-        assert_eq!(mark.note, None);
-    }
-
-    #[test]
-    fn test_timestamp_mark_without_ticket() {
-        let mut mgr = TimestampManager::new();
-        let mark = mgr.add_mark(60, None, Some("important point".to_string()));
-        assert_eq!(mark.ticket, None);
-        assert_eq!(mark.note, Some("important point".to_string()));
-    }
-
-    #[test]
-    fn test_timestamp_manager_add_multiple() {
-        let mut mgr = TimestampManager::new();
-        mgr.add_mark(10, None, None);
-        mgr.add_mark(20, None, None);
-        mgr.add_mark(30, None, None);
-        assert_eq!(mgr.get_marks().len(), 3);
-    }
-
-    #[test]
-    fn test_timestamp_manager_save_json() {
-        let dir = test_dir();
-        let path = dir.join("timestamps.json");
-
-        let mut mgr = TimestampManager::new();
-        mgr.add_mark(323, Some("GT-1234".to_string()), None);
-        mgr.add_mark(600, None, Some("discussion".to_string()));
-
-        mgr.save(&path).unwrap();
-
-        let content = fs::read_to_string(&path).unwrap();
-        let parsed: serde_json::Value = serde_json::from_str(&content).unwrap();
-
-        assert!(parsed["marks"].is_array());
-        assert_eq!(parsed["marks"].as_array().unwrap().len(), 2);
-        assert_eq!(parsed["marks"][0]["time"], "00:05:23");
-        assert_eq!(parsed["marks"][0]["seconds"], 323);
-        assert_eq!(parsed["marks"][0]["ticket"], "GT-1234");
-
-        cleanup(&dir);
+    fn test_default_base_uses_data_local_dir() {
+        let data_dir = dirs::data_local_dir().unwrap();
+        let expected = data_dir.join("lcars-voice").join("recordings");
+        assert!(expected
+            .to_str()
+            .unwrap()
+            .contains("lcars-voice/recordings"));
     }
 
     #[test]
@@ -312,39 +207,5 @@ mod tests {
         assert_eq!(parsed["format"], "wav");
 
         cleanup(&base);
-    }
-
-    #[test]
-    fn test_meeting_session_save_timestamps() {
-        let base = test_dir();
-        let mut session = MeetingSession::new(Some(base.to_str().unwrap())).unwrap();
-        session
-            .timestamps
-            .add_mark(100, Some("GT-100".to_string()), None);
-        session.save_timestamps().unwrap();
-
-        let ts_path = session.output_dir.join("timestamps.json");
-        assert!(ts_path.exists());
-
-        let content = fs::read_to_string(&ts_path).unwrap();
-        let parsed: serde_json::Value = serde_json::from_str(&content).unwrap();
-        assert_eq!(parsed["marks"][0]["ticket"], "GT-100");
-
-        cleanup(&base);
-    }
-
-    #[test]
-    fn test_timestamp_mark_serializable() {
-        let mark = TimestampMark {
-            time: "00:01:00".to_string(),
-            seconds: 60,
-            ticket: Some("GT-1".to_string()),
-            note: None,
-        };
-        let json = serde_json::to_string(&mark).unwrap();
-        let deserialized: TimestampMark = serde_json::from_str(&json).unwrap();
-        assert_eq!(deserialized.time, "00:01:00");
-        assert_eq!(deserialized.seconds, 60);
-        assert_eq!(deserialized.ticket, Some("GT-1".to_string()));
     }
 }

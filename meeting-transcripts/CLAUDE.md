@@ -4,28 +4,27 @@ This file provides guidance to Claude Code when working with code in this projec
 
 ## Project Overview
 
-Pipeline to transcribe Zoom meeting recordings into per-JIRA-ticket markdown files with speaker attribution. Works with local recordings from [zoom-recorder](../zoom-recorder/).
+Pipeline to transcribe meeting recordings into markdown transcript files with speaker attribution. Works with local recordings from [lcars-voice](../lcars-voice/).
 
 ## Pipeline Flow
 
 ```
-zoom-recorder output    →  whisper-wrapper.py  →  diarize.py  →  segment-transcript.py  →  fetch-jira-info.sh
-(audio.wav + timestamps)   (transcribe)           (speakers)     (split by ticket)          (JIRA metadata)
+lcars-voice recordings  →  whisper-wrapper.py  →  diarize.py  →  segment-transcript.py
+(audio.wav)                (transcribe)           (speakers)     (write transcript)
 ```
 
 Orchestrated by `process-local-recordings.sh` (steps 1-3) and `process-recordings.sh` (all steps).
 
+If older recordings have a `timestamps.json` with ticket marks, `segment-transcript.py` will split into per-ticket files. Otherwise it produces a single transcript per recording.
+
 ## Running
 
 ```bash
-# Process today's recordings (transcribe + diarize + segment + JIRA enrich)
+# Process today's recordings (transcribe + diarize + segment)
 ./process-recordings.sh
 
 # Process a specific date
 ./process-recordings.sh 2026-02-19
-
-# Just transcribe + diarize + segment (no JIRA)
-./process-local-recordings.sh 2026-02-19
 
 # Run tests
 ~/voice-to-text-env/bin/python -m pytest tests/ -v
@@ -36,11 +35,11 @@ Orchestrated by `process-local-recordings.sh` (steps 1-3) and `process-recording
 | Script | Purpose |
 |--------|---------|
 | `process-recordings.sh` | Master orchestrator — runs all steps |
-| `process-local-recordings.sh` | Transcribe → diarize → segment by ticket |
+| `process-local-recordings.sh` | Transcribe → diarize → segment |
 | `whisper-wrapper.py` | Whisper transcription, outputs JSON with confidence scores |
 | `diarize.py` | pyannote speaker diarization + hallucination filtering + segment merging |
-| `segment-transcript.py` | Splits segments by JIRA ticket marks, formats speaker labels |
-| `fetch-jira-info.sh` | Appends JIRA metadata to transcript .md files |
+| `segment-transcript.py` | Writes transcript markdown, optionally splits by ticket marks |
+| `fetch-jira-info.sh` | Standalone tool: appends JIRA metadata to transcript .md files |
 
 ### Legacy (unused)
 
@@ -50,7 +49,7 @@ Orchestrated by `process-local-recordings.sh` (steps 1-3) and `process-recording
 
 - Python virtualenv: `~/voice-to-text-env/bin/python` (whisper, pyannote.audio, torch with CUDA)
 - Config: `.env` (copy from `.env.example`)
-- Recordings source: `~/zoom-recordings/` (zoom-recorder output)
+- Recordings source: `~/.local/share/lcars-voice/recordings/` (lcars-voice output)
 - Output: `recordings/` directory (per-ticket .md files)
 
 ## Architecture Notes
@@ -70,7 +69,7 @@ Diarization failure is non-fatal: the pipeline falls back to unlabeled transcrip
 
 - When segments have speaker labels, text is formatted as `**Speaker N:** text` and joined with `\n\n`
 - Without speakers, text is space-joined (backward compatible)
-- JIRA ticket boundaries come from `timestamps.json` marks created by zoom-recorder
+- If `timestamps.json` exists (from older recordings), ticket boundaries are used to split into per-ticket files
 
 ### Output Format
 

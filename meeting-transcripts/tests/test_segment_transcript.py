@@ -246,3 +246,24 @@ def test_segment_by_tickets_mixed_speakers_and_no_speakers():
 
     # Joined with double-newline
     assert "\n\n" in text
+
+
+def test_main_without_timestamps_json(tmp_path):
+    """main() works without timestamps_json argument."""
+    from importlib.util import spec_from_file_location, module_from_spec
+    spec = spec_from_file_location("segment_transcript",
+        os.path.join(os.path.dirname(__file__), "..", "segment-transcript.py"))
+    mod = module_from_spec(spec)
+    spec.loader.exec_module(mod)
+
+    whisper_data = {"segments": [
+        {"start": 0.0, "end": 5.0, "text": "Hello."},
+    ]}
+    whisper_file = tmp_path / "whisper.json"
+    whisper_file.write_text(json.dumps(whisper_data))
+    output_dir = tmp_path / "output"
+    sys.argv = ["segment-transcript.py", str(whisper_file),
+                str(output_dir), "--source", "2026-02-26-030711/audio.wav",
+                "--date", "2026-02-26"]
+    mod.main()
+    assert (output_dir / "2026-02-26-030711.md").exists()

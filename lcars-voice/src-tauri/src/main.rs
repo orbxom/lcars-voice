@@ -14,7 +14,7 @@ mod transcription;
 
 use audio_sources::AudioSourceInfo;
 use database::{Database, Transcription};
-use meeting::{MeetingSession, TimestampMark};
+use meeting::MeetingSession;
 use recording::Recorder;
 use std::path::PathBuf;
 use std::sync::{
@@ -77,7 +77,6 @@ struct AppState {
     current_model_name: Mutex<String>,
     recording_mode: Mutex<RecordingMode>,
     meeting_session: Mutex<Option<MeetingSession>>,
-    is_paused: AtomicBool,
 }
 
 fn ensure_whisper_context(
@@ -140,28 +139,6 @@ fn add_transcription(
     .map_err(|e| e.to_string())
 }
 
-fn handle_meeting_pause_toggle(app: &tauri::AppHandle, source: &str) {
-    let state = app.state::<AppState>();
-    let mut recorder = state.recorder.lock().unwrap_or_else(|e| e.into_inner());
-    if recorder.is_paused() {
-        match recorder.resume() {
-            Ok(()) => {
-                state.is_paused.store(false, Ordering::SeqCst);
-                let _ = app.emit("meeting-resumed", ());
-            }
-            Err(e) => eprintln!("[LCARS] {}: resume failed: {}", source, e),
-        }
-    } else {
-        match recorder.pause() {
-            Ok(()) => {
-                state.is_paused.store(true, Ordering::SeqCst);
-                let _ = app.emit("meeting-paused", ());
-            }
-            Err(e) => eprintln!("[LCARS] {}: pause failed: {}", source, e),
-        }
-    }
-}
-
 fn handle_start_recording(app: &tauri::AppHandle) -> Result<(), String> {
     let state = app.state::<AppState>();
     let mode = *state.recording_mode.lock().map_err(|e| e.to_string())?;
@@ -195,7 +172,6 @@ fn handle_start_recording(app: &tauri::AppHandle) -> Result<(), String> {
     }
 
     state.is_recording.store(true, Ordering::SeqCst);
-    state.is_paused.store(false, Ordering::SeqCst);
     let _ = app.emit("recording-started", ());
     send_notification(
         app,
@@ -223,7 +199,6 @@ fn handle_stop_and_transcribe(app: &tauri::AppHandle) {
     eprintln!("[LCARS] Stopping recording, starting transcription");
     let state = app.state::<AppState>();
     state.is_recording.store(false, Ordering::SeqCst);
-    state.is_paused.store(false, Ordering::SeqCst);
 
     // Update tray icon back to idle state
     if let Some(tray) = app.tray_by_id("main-tray") {
@@ -281,9 +256,6 @@ fn handle_stop_and_transcribe(app: &tauri::AppHandle) {
                 if let Err(e) = session.save_metadata(recording.duration_ms as f64 / 1000.0) {
                     eprintln!("[LCARS] Warning: failed to save metadata: {}", e);
                 }
-                if let Err(e) = session.save_timestamps() {
-                    eprintln!("[LCARS] Warning: failed to save timestamps: {}", e);
-                }
                 let output_dir = session.output_dir.to_string_lossy().to_string();
                 send_notification(
                     &app_clone,
@@ -294,7 +266,11 @@ fn handle_stop_and_transcribe(app: &tauri::AppHandle) {
             }
         } else {
             let _ = app_clone.emit("transcribing", ());
-            send_notification(&app_clone, "LCARS Voice", "Recording stopped, transcribing...");
+            send_notification(
+                &app_clone,
+                "LCARS Voice",
+                "Recording stopped, transcribing...",
+            );
 
             // Step 2: Ensure whisper model is loaded (may trigger download)
             if let Err(e) = ensure_whisper_context(&app_clone, &state, &model) {
@@ -393,7 +369,9 @@ fn send_notification(_app: &tauri::AppHandle, title: &str, body: &str) {
             .arg(&body)
             .status()
         {
-            Ok(s) if s.success() => eprintln!("[LCARS] notification: Sent '{}' - '{}'", title, body),
+            Ok(s) if s.success() => {
+                eprintln!("[LCARS] notification: Sent '{}' - '{}'", title, body)
+            }
             Ok(s) => eprintln!("[LCARS] notification: notify-send exited with {}", s),
             Err(e) => eprintln!("[LCARS] notification: Failed to run notify-send: {:?}", e),
         }
@@ -459,51 +437,6 @@ fn set_recording_mode(app: tauri::AppHandle, mode: String) -> Result<(), String>
 }
 
 #[tauri::command]
-fn pause_recording(app: tauri::AppHandle) -> Result<(), String> {
-    let state = app.state::<AppState>();
-    let mut recorder = state.recorder.lock().map_err(|e| e.to_string())?;
-    recorder.pause()?;
-    state.is_paused.store(true, Ordering::SeqCst);
-    let _ = app.emit("meeting-paused", ());
-    Ok(())
-}
-
-#[tauri::command]
-fn resume_recording(app: tauri::AppHandle) -> Result<(), String> {
-    let state = app.state::<AppState>();
-    let mut recorder = state.recorder.lock().map_err(|e| e.to_string())?;
-    recorder.resume()?;
-    state.is_paused.store(false, Ordering::SeqCst);
-    let _ = app.emit("meeting-resumed", ());
-    Ok(())
-}
-
-#[tauri::command]
-fn add_timestamp_mark(
-    state: State<AppState>,
-    ticket: Option<String>,
-    note: Option<String>,
-) -> Result<TimestampMark, String> {
-    let recorder = state.recorder.lock().map_err(|e| e.to_string())?;
-    let elapsed = recorder.elapsed_seconds() as u64;
-    drop(recorder);
-
-    let mut session = state.meeting_session.lock().map_err(|e| e.to_string())?;
-    let session = session.as_mut().ok_or("No active meeting session")?;
-    let mark = session.timestamps.add_mark(elapsed, ticket, note);
-    Ok(mark)
-}
-
-#[tauri::command]
-fn get_timestamp_marks(state: State<AppState>) -> Result<Vec<TimestampMark>, String> {
-    let session = state.meeting_session.lock().map_err(|e| e.to_string())?;
-    match session.as_ref() {
-        Some(s) => Ok(s.timestamps.get_marks().to_vec()),
-        None => Ok(Vec::new()),
-    }
-}
-
-#[tauri::command]
 fn list_audio_sources() -> Vec<AudioSourceInfo> {
     audio_sources::enumerate_sources()
 }
@@ -527,7 +460,6 @@ fn main() {
         current_model_name: Mutex::new(String::new()),
         recording_mode: Mutex::new(RecordingMode::VoiceNote),
         meeting_session: Mutex::new(None),
-        is_paused: AtomicBool::new(false),
     };
 
     let socket_path = dirs::runtime_dir()
@@ -556,19 +488,7 @@ fn main() {
                     let was_recording = state.is_recording.load(Ordering::SeqCst);
 
                     if was_recording {
-                        let mode = {
-                            let m = state
-                                .recording_mode
-                                .lock()
-                                .unwrap_or_else(|e| e.into_inner());
-                            *m
-                        };
-
-                        if mode == RecordingMode::Meeting {
-                            handle_meeting_pause_toggle(app, "hotkey");
-                        } else {
-                            handle_stop_and_transcribe(app);
-                        }
+                        handle_stop_and_transcribe(app);
                     } else {
                         if let Err(e) = handle_start_recording(app) {
                             eprintln!("[LCARS] hotkey: Failed to start recording: {}", e);
@@ -594,10 +514,6 @@ fn main() {
             get_audio_level,
             get_recording_mode,
             set_recording_mode,
-            pause_recording,
-            resume_recording,
-            add_timestamp_mark,
-            get_timestamp_marks,
             list_audio_sources,
             get_elapsed_time,
         ])
@@ -657,18 +573,7 @@ fn main() {
                                 let state = app_handle.state::<AppState>();
                                 let was_recording = state.is_recording.load(Ordering::SeqCst);
                                 if was_recording {
-                                    let mode = {
-                                        let m = state
-                                            .recording_mode
-                                            .lock()
-                                            .unwrap_or_else(|e| e.into_inner());
-                                        *m
-                                    };
-                                    if mode == RecordingMode::Meeting {
-                                        handle_meeting_pause_toggle(&app_handle, "toggle");
-                                    } else {
-                                        handle_stop_and_transcribe(&app_handle);
-                                    }
+                                    handle_stop_and_transcribe(&app_handle);
                                 } else {
                                     if let Err(e) = handle_start_recording(&app_handle) {
                                         eprintln!("[LCARS] toggle: Failed: {}", e);
@@ -839,7 +744,6 @@ mod tests {
             current_model_name: Mutex::new(String::new()),
             recording_mode: Mutex::new(RecordingMode::VoiceNote),
             meeting_session: Mutex::new(None),
-            is_paused: AtomicBool::new(false),
         };
         assert!(state.whisper_ctx.lock().unwrap().is_none());
         assert_eq!(*state.current_model_name.lock().unwrap(), "");
@@ -857,7 +761,6 @@ mod tests {
             current_model_name: Mutex::new(String::new()),
             recording_mode: Mutex::new(RecordingMode::VoiceNote),
             meeting_session: Mutex::new(None),
-            is_paused: AtomicBool::new(false),
         };
         assert!(!state.is_recording.load(Ordering::SeqCst));
         state.is_recording.store(true, Ordering::SeqCst);

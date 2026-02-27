@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Segment a whisper transcript by JIRA timestamp marks and write per-ticket markdown files."""
+"""Segment a whisper transcript by timestamp marks and write per-ticket markdown files."""
 
 import argparse
 import json
@@ -100,19 +100,23 @@ def write_transcript_md(filepath, ticket, source, date, start_time, end_time, te
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Segment whisper transcript by JIRA timestamp marks")
+    parser = argparse.ArgumentParser(description="Segment whisper transcript by timestamp marks")
     parser.add_argument("whisper_json", help="Path to whisper JSON output file")
-    parser.add_argument("timestamps_json", help="Path to timestamps.json from zoom-recorder")
     parser.add_argument("output_dir", help="Directory to write per-ticket .md files")
+    parser.add_argument("timestamps_json", nargs="?", default=None,
+                        help="Path to timestamps.json (optional, for backward compat with old recordings)")
     parser.add_argument("--source", required=True, help="Source identifier for the .md header (e.g. '2026-02-19-093015/audio.wav')")
     parser.add_argument("--date", required=True, help="Recording date (e.g. '2026-02-19')")
     args = parser.parse_args()
 
     whisper_data = load_json(args.whisper_json)
-    timestamps_data = load_json(args.timestamps_json)
+
+    marks = []
+    if args.timestamps_json and os.path.exists(args.timestamps_json):
+        timestamps_data = load_json(args.timestamps_json)
+        marks = timestamps_data.get("marks", [])
 
     segments = whisper_data.get("segments", [])
-    marks = timestamps_data.get("marks", [])
 
     if not segments:
         print("Warning: No segments in whisper output", file=sys.stderr)

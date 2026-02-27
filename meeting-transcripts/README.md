@@ -1,6 +1,6 @@
 # Meeting Transcripts
 
-Automated pipeline to transcribe Zoom meeting recordings and enrich with JIRA information. Works with local recordings from the [zoom-recorder](../zoom-recorder/) tool.
+Automated pipeline to transcribe meeting recordings into markdown with speaker attribution. Works with local recordings from [lcars-voice](../lcars-voice/).
 
 ## Quick Start
 
@@ -22,20 +22,14 @@ cp .env.example .env
 
 - Python virtualenv with Whisper and pyannote.audio at `~/voice-to-text-env` (or set `PYTHON_ENV` in `.env`)
 - FFmpeg
-- JIRA API token
 - HuggingFace token with access to [pyannote/speaker-diarization-3.1](https://huggingface.co/pyannote/speaker-diarization-3.1) (for speaker diarization)
-- [zoom-recorder](../zoom-recorder/) producing recordings in `~/zoom-recordings/`
+- [lcars-voice](../lcars-voice/) producing recordings in `~/.local/share/lcars-voice/recordings/`
 
 ### Configuration
 
 Copy `.env.example` to `.env` and fill in:
 
 ```bash
-# JIRA
-JIRA_URL=https://yourcompany.atlassian.net
-JIRA_USER=your.email@company.com
-JIRA_TOKEN=your-api-token
-
 # Whisper
 WHISPER_MODEL=large-v3
 
@@ -43,39 +37,36 @@ WHISPER_MODEL=large-v3
 HF_TOKEN=your-huggingface-token
 
 # Paths (optional, these are the defaults)
-RECORDINGS_SOURCE=~/zoom-recordings
+RECORDINGS_SOURCE=~/.local/share/lcars-voice/recordings
 PYTHON_ENV=~/voice-to-text-env/bin/python
 ```
 
 ## Workflow
 
-1. **During meetings:** Use [zoom-recorder](../zoom-recorder/) to record Zoom calls, marking JIRA tickets as topics come up
-2. **End of day:** Run the pipeline to transcribe and enrich
+1. **During meetings:** Use [lcars-voice](../lcars-voice/) in Meeting mode to record
+2. **End of day:** Run the pipeline to transcribe
 
 ```bash
-# Full pipeline (transcribe + segment + JIRA enrich)
+# Full pipeline (transcribe + diarize + segment)
 ./process-recordings.sh 2026-02-19
 
 # Or step by step
-./process-local-recordings.sh 2026-02-19       # Transcribe and segment by ticket
-./fetch-jira-info.sh ./recordings               # Enrich with JIRA metadata
+./process-local-recordings.sh 2026-02-19       # Transcribe, diarize, write transcript
 ```
 
 3. **Analysis:** Use the `analyzing-meeting-transcripts` Claude skill on individual `.md` files to generate deep technical analysis reports
 
 ## How It Works
 
-The pipeline processes zoom-recorder output directories from `~/zoom-recordings/`:
+The pipeline processes lcars-voice recording directories from `~/.local/share/lcars-voice/recordings/`:
 
 ```
-~/zoom-recordings/
+~/.local/share/lcars-voice/recordings/
 ├── 2026-02-19-093015/          <- One recording session
 │   ├── audio.wav               <- 16kHz mono WAV
-│   ├── timestamps.json         <- JIRA ticket marks with time positions
 │   └── metadata.json           <- Recording metadata
 └── 2026-02-19-140022/          <- Another session
     ├── audio.wav
-    ├── timestamps.json
     └── metadata.json
 ```
 
@@ -84,29 +75,26 @@ For each recording:
 2. pyannote.audio runs speaker diarization, assigning each segment a speaker label (`Speaker 1`, `Speaker 2`, etc.)
 3. Hallucinated segments are filtered (using whisper confidence scores and language detection)
 4. Consecutive same-speaker segments are merged for readability
-5. Segments are matched to JIRA tickets using `timestamps.json` marks
-6. Per-ticket `.md` files are written (e.g., `GT-9516.md`) with speaker attribution
-7. JIRA metadata (summary, status, subtasks, comments, attachments) is appended
+5. A transcript `.md` file is written (e.g., `2026-02-19-093015.md`) with speaker attribution
 
 ## Output
 
 After processing, the `recordings/` directory contains:
 
-- `GT-XXXX.md` - Transcript segment + JIRA information
-- `attachments/<jira-id>/` - Downloaded JIRA image attachments
+- `YYYY-MM-DD-HHMMSS.md` - Transcript with speaker attribution
 
-If the same ticket is discussed in multiple recording sessions, the transcript segments are appended to the same `.md` file.
+If the same recording session is processed again, the transcript is appended to the existing `.md` file.
 
 ## Scripts
 
 | Script | Purpose |
 |--------|---------|
-| `process-recordings.sh` | Master orchestrator - runs all steps |
-| `process-local-recordings.sh` | Finds recordings by date, transcribes, diarizes, segments by ticket |
-| `fetch-jira-info.sh` | JIRA API enrichment |
+| `process-recordings.sh` | Master orchestrator — runs all steps |
+| `process-local-recordings.sh` | Finds recordings by date, transcribes, diarizes, writes transcript |
 | `diarize.py` | Speaker diarization with pyannote + hallucination filtering |
-| `segment-transcript.py` | Splits whisper output by JIRA timestamp marks |
+| `segment-transcript.py` | Writes transcript markdown |
 | `whisper-wrapper.py` | Python wrapper for Whisper |
+| `fetch-jira-info.sh` | Standalone tool: appends JIRA metadata to transcript .md files (optional) |
 
 ### Legacy Scripts
 

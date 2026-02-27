@@ -30,10 +30,6 @@ pub struct Recorder {
     monitor_buffer: Arc<Mutex<Vec<f32>>>,
     monitor_sample_rate: u32,
     monitor_channels: u16,
-
-    // Pause/resume fields
-    elapsed_before_pause: std::time::Duration,
-    is_paused: bool,
 }
 
 // SAFETY: cpal::Stream is !Send because it contains platform-specific handles
@@ -65,8 +61,6 @@ impl Recorder {
             monitor_buffer: Arc::new(Mutex::new(Vec::new())),
             monitor_sample_rate: 0,
             monitor_channels: 0,
-            elapsed_before_pause: std::time::Duration::ZERO,
-            is_paused: false,
         }
     }
 
@@ -85,7 +79,10 @@ impl Recorder {
         const PAREC_CHANNELS: u16 = 1;
 
         let monitor_source = audio_sources::get_default_monitor_source()?;
-        eprintln!("[LCARS] recording: using monitor source: {}", monitor_source);
+        eprintln!(
+            "[LCARS] recording: using monitor source: {}",
+            monitor_source
+        );
 
         self.monitor_sample_rate = PAREC_RATE;
         self.monitor_channels = PAREC_CHANNELS;
@@ -143,7 +140,7 @@ impl Recorder {
                 total_bytes += bytes_read;
                 let samples = bytes_to_f32_samples(&byte_buf[..bytes_read]);
 
-                // When paused, drain pipe to prevent parec blocking but discard samples
+                // When inactive, drain pipe to prevent parec blocking but discard samples
                 if !monitor_is_active.load(Ordering::SeqCst) {
                     discarded_samples += samples.len();
                     continue;
@@ -202,8 +199,6 @@ impl Recorder {
 
         self.is_active.store(true, Ordering::SeqCst);
         self.rms_level.store(0f32.to_bits(), Ordering::SeqCst);
-        self.elapsed_before_pause = std::time::Duration::ZERO;
-        self.is_paused = false;
 
         let buffer = Arc::clone(&self.buffer);
         let is_active = Arc::clone(&self.is_active);
@@ -271,14 +266,11 @@ impl Recorder {
         // Signal the callback to stop capturing
         self.is_active.store(false, Ordering::SeqCst);
 
-        // Calculate duration accounting for pauses
-        let mut total_elapsed = self.elapsed_before_pause;
-        if let Some(start) = self.start_time {
-            if !self.is_paused {
-                total_elapsed += start.elapsed();
-            }
-        }
-        let duration_ms = total_elapsed.as_millis() as i64;
+        // Calculate duration
+        let duration_ms = self
+            .start_time
+            .map(|start| start.elapsed().as_millis() as i64)
+            .unwrap_or(0);
 
         // Drop the streams to stop the audio devices
         self.stream = None;
@@ -294,8 +286,6 @@ impl Recorder {
             eprintln!("[LCARS] recording: parec reader thread joined");
         }
         self.start_time = None;
-        self.elapsed_before_pause = std::time::Duration::ZERO;
-        self.is_paused = false;
 
         // Take the mic buffer contents
         let raw_samples = if let Ok(mut buf) = self.buffer.lock() {
@@ -327,27 +317,43 @@ impl Recorder {
 
         let audio_data = if !monitor_samples.is_empty() {
             // Diagnostic stats for monitor buffer
-            let mon_min = monitor_samples.iter().cloned().fold(f32::INFINITY, f32::min);
-            let mon_max = monitor_samples.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
-            let mon_rms = (monitor_samples.iter().map(|s| s * s).sum::<f32>() / monitor_samples.len() as f32).sqrt();
+            let mon_min = monitor_samples
+                .iter()
+                .cloned()
+                .fold(f32::INFINITY, f32::min);
+            let mon_max = monitor_samples
+                .iter()
+                .cloned()
+                .fold(f32::NEG_INFINITY, f32::max);
+            let mon_rms = (monitor_samples.iter().map(|s| s * s).sum::<f32>()
+                / monitor_samples.len() as f32)
+                .sqrt();
             eprintln!(
                 "[LCARS] recording: monitor raw: count={}, min={:.6}, max={:.6}, rms={:.6}",
-                monitor_samples.len(), mon_min, mon_max, mon_rms
+                monitor_samples.len(),
+                mon_min,
+                mon_max,
+                mon_rms
             );
             // Mic stats too
-            let mic_rms = (mic_audio.iter().map(|s| s * s).sum::<f32>() / mic_audio.len() as f32).sqrt();
+            let mic_rms =
+                (mic_audio.iter().map(|s| s * s).sum::<f32>() / mic_audio.len() as f32).sqrt();
             eprintln!(
                 "[LCARS] recording: mic resampled: count={}, rms={:.6}",
-                mic_audio.len(), mic_rms
+                mic_audio.len(),
+                mic_rms
             );
 
             let monitor_mono = downmix_to_mono(&monitor_samples, self.monitor_channels);
             let monitor_audio = resample_to_16khz(&monitor_mono, self.monitor_sample_rate)?;
 
-            let mon_res_rms = (monitor_audio.iter().map(|s| s * s).sum::<f32>() / monitor_audio.len() as f32).sqrt();
+            let mon_res_rms = (monitor_audio.iter().map(|s| s * s).sum::<f32>()
+                / monitor_audio.len() as f32)
+                .sqrt();
             eprintln!(
                 "[LCARS] recording: monitor resampled: count={}, rms={:.6}",
-                monitor_audio.len(), mon_res_rms
+                monitor_audio.len(),
+                mon_res_rms
             );
 
             mix_streams(&mic_audio, &monitor_audio)
@@ -374,44 +380,10 @@ impl Recorder {
         f32::from_bits(self.rms_level.load(Ordering::SeqCst))
     }
 
-    pub fn pause(&mut self) -> Result<(), String> {
-        if self.stream.is_none() {
-            return Err("Not recording".to_string());
-        }
-        if self.is_paused {
-            return Err("Already paused".to_string());
-        }
-        self.is_active.store(false, Ordering::SeqCst);
-        if let Some(start) = self.start_time {
-            self.elapsed_before_pause += start.elapsed();
-        }
-        self.start_time = None;
-        self.is_paused = true;
-        Ok(())
-    }
-
-    pub fn resume(&mut self) -> Result<(), String> {
-        if !self.is_paused {
-            return Err("Not paused".to_string());
-        }
-        self.is_active.store(true, Ordering::SeqCst);
-        self.start_time = Some(Instant::now());
-        self.is_paused = false;
-        Ok(())
-    }
-
-    pub fn is_paused(&self) -> bool {
-        self.is_paused
-    }
-
     pub fn elapsed_seconds(&self) -> f64 {
-        let mut total = self.elapsed_before_pause;
-        if let Some(start) = self.start_time {
-            if !self.is_paused {
-                total += start.elapsed();
-            }
-        }
-        total.as_secs_f64()
+        self.start_time
+            .map(|start| start.elapsed().as_secs_f64())
+            .unwrap_or(0.0)
     }
 }
 
@@ -712,7 +684,11 @@ mod tests {
         assert!((mixed[1] - 0.5).abs() < 1e-6);
     }
 
-    // --- pause/resume tests ---
+    #[test]
+    fn test_elapsed_seconds_zero_when_not_recording() {
+        let recorder = Recorder::new();
+        assert!(recorder.elapsed_seconds() < 0.01);
+    }
 
     // --- bytes_to_f32_samples tests ---
 
@@ -756,28 +732,5 @@ mod tests {
     fn test_bytes_to_f32_samples_too_short() {
         let samples = bytes_to_f32_samples(&[0, 1, 2]);
         assert!(samples.is_empty());
-    }
-
-    #[test]
-    fn test_recorder_initial_pause_state() {
-        let recorder = Recorder::new();
-        assert!(!recorder.is_paused());
-        assert!(recorder.elapsed_seconds() < 0.01);
-    }
-
-    #[test]
-    fn test_pause_not_recording() {
-        let mut recorder = Recorder::new();
-        let result = recorder.pause();
-        assert!(result.is_err());
-        assert_eq!(result.unwrap_err(), "Not recording");
-    }
-
-    #[test]
-    fn test_resume_not_paused() {
-        let mut recorder = Recorder::new();
-        let result = recorder.resume();
-        assert!(result.is_err());
-        assert_eq!(result.unwrap_err(), "Not paused");
     }
 }

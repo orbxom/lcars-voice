@@ -44,6 +44,8 @@ Frontend (src/)           Backend (src-tauri/src/)
 - `get_whisper_model`, `set_whisper_model` (uses tauri-plugin-store)
 - `is_model_downloaded`, `download_model` (model management)
 - `get_audio_level` (real-time RMS for waveform UI)
+- `get_recording_mode`, `set_recording_mode` (Voice Note / Meeting)
+- `get_elapsed_time` (elapsed recording seconds)
 
 **Global hotkey**: Super+Alt+H toggles recording on/off.
 
@@ -54,6 +56,7 @@ Frontend (src/)           Backend (src-tauri/src/)
 - History database: `~/.local/share/lcars-voice/history.db`
 - Settings store: `~/.local/share/lcars-voice/settings.json` (whisper model preference)
 - Whisper models: `~/.local/share/lcars-voice/models/ggml-{base,small,medium,large}.bin`
+- Meeting recordings: `~/.local/share/lcars-voice/recordings/YYYY-MM-DD-HHMMSS/` (audio.wav + metadata.json)
 - Unix socket: `$XDG_RUNTIME_DIR/lcars-voice.sock`
 - Whisper model: Configurable via UI dropdown (base, small, medium, large). Falls back to `WHISPER_MODEL` env var, then defaults to `base`. Models auto-download from HuggingFace on first use.
 
@@ -62,7 +65,7 @@ Frontend (src/)           Backend (src-tauri/src/)
 - No build tooling - vanilla JS/HTML/CSS
 - Antonio font self-hosted in `src/fonts/`
 - LCARS color palette: Orange (#FF9900), Purple (#CC99CC), Blue (#9999FF), Tan (#FFCC99)
-- Tauri events: `recording-started`, `transcribing`, `transcription-complete`, `transcription-error`, `model-download-progress`
+- Tauri events: `recording-started`, `transcribing`, `transcription-complete`, `transcription-error`, `model-download-progress`, `meeting-saved`
 - Logging uses `[LCARS]` prefix
 
 ## Dependencies
