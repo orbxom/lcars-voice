@@ -978,6 +978,48 @@ body {
   letter-spacing: 1px;
 }
 
+/* Meeting action buttons */
+.meeting-action-btn {
+  padding: 4px 12px;
+  border: 1px solid;
+  border-radius: 4px;
+  background: transparent;
+  font-family: var(--font-display);
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 1px;
+  cursor: pointer;
+  transition: all 0.15s ease;
+  white-space: nowrap;
+}
+
+.meeting-action-btn.transcribe-btn {
+  border-color: var(--lcars-orange);
+  color: var(--lcars-orange);
+}
+
+.meeting-action-btn.transcribe-btn:hover {
+  background: var(--lcars-orange);
+  color: var(--lcars-black);
+}
+
+.meeting-action-btn.copy-transcript-btn {
+  border-color: var(--lcars-blue);
+  color: var(--lcars-blue);
+}
+
+.meeting-action-btn.copy-transcript-btn:hover {
+  background: var(--lcars-blue);
+  color: var(--lcars-black);
+}
+
+.meeting-action-btn.processing {
+  border-color: var(--lcars-purple);
+  color: var(--lcars-purple);
+  opacity: 0.7;
+  cursor: default;
+}
+
 /* ============================================
    RESPONSIVE
    ============================================ */

@@ -20,6 +20,7 @@ pub struct MeetingRecord {
     pub timestamp: String,
     pub duration_ms: i64,
     pub size_bytes: i64,
+    pub transcript: Option<String>,
 }
 
 pub struct Database {
@@ -59,6 +60,10 @@ impl Database {
             )",
             [],
         )?;
+
+        // Migration: add transcript column if it doesn't exist
+        conn.execute_batch("ALTER TABLE meetings ADD COLUMN transcript TEXT;")
+            .ok();
 
         Ok(Self { conn })
     }
@@ -144,7 +149,7 @@ impl Database {
 
     pub fn get_meetings(&self, limit: usize) -> Result<Vec<MeetingRecord>> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, filename, timestamp, duration_ms, size_bytes
+            "SELECT id, filename, timestamp, duration_ms, size_bytes, transcript
              FROM meetings
              ORDER BY timestamp DESC
              LIMIT ?1",
@@ -157,10 +162,30 @@ impl Database {
                 timestamp: row.get(2)?,
                 duration_ms: row.get(3)?,
                 size_bytes: row.get(4)?,
+                transcript: row.get(5)?,
             })
         })?;
 
         rows.collect()
+    }
+
+    pub fn get_meeting_audio(&self, id: i64) -> Result<Vec<u8>> {
+        self.conn.query_row(
+            "SELECT audio_data FROM meetings WHERE id = ?1",
+            params![id],
+            |row| row.get(0),
+        )
+    }
+
+    pub fn save_meeting_transcript(&self, id: i64, transcript: &str) -> Result<()> {
+        let rows = self.conn.execute(
+            "UPDATE meetings SET transcript = ?1 WHERE id = ?2",
+            params![transcript, id],
+        )?;
+        if rows == 0 {
+            return Err(rusqlite::Error::QueryReturnedNoRows);
+        }
+        Ok(())
     }
 }
 
@@ -185,7 +210,8 @@ impl Database {
                 audio_data BLOB NOT NULL,
                 timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
                 duration_ms INTEGER NOT NULL,
-                size_bytes INTEGER NOT NULL
+                size_bytes INTEGER NOT NULL,
+                transcript TEXT
             )",
             [],
         )?;
@@ -308,5 +334,66 @@ mod tests {
         let transcriptions = db.get_history(10).unwrap();
         assert_eq!(meetings.len(), 1);
         assert_eq!(transcriptions.len(), 1);
+    }
+
+    #[test]
+    fn test_meeting_record_has_transcript_field() {
+        let db = Database::new_in_memory().unwrap();
+        let audio = vec![0u8; 50];
+        db.add_meeting("test.wav", &audio, 3000).unwrap();
+        let meetings = db.get_meetings(10).unwrap();
+        assert_eq!(meetings.len(), 1);
+        assert_eq!(meetings[0].transcript, None);
+    }
+
+    #[test]
+    fn test_save_and_get_meeting_transcript() {
+        let db = Database::new_in_memory().unwrap();
+        let audio = vec![0u8; 50];
+        let id = db.add_meeting("test.wav", &audio, 3000).unwrap();
+        db.save_meeting_transcript(id, "This is the transcript text").unwrap();
+        let meetings = db.get_meetings(10).unwrap();
+        assert_eq!(meetings.len(), 1);
+        assert_eq!(meetings[0].transcript, Some("This is the transcript text".to_string()));
+    }
+
+    #[test]
+    fn test_get_meeting_audio() {
+        let db = Database::new_in_memory().unwrap();
+        let audio = vec![1u8, 2, 3, 4, 5];
+        let id = db.add_meeting("test.wav", &audio, 1000).unwrap();
+        let retrieved = db.get_meeting_audio(id).unwrap();
+        assert_eq!(retrieved, vec![1u8, 2, 3, 4, 5]);
+    }
+
+    #[test]
+    fn test_get_meeting_audio_not_found() {
+        let db = Database::new_in_memory().unwrap();
+        let result = db.get_meeting_audio(999);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_save_transcript_not_found() {
+        let db = Database::new_in_memory().unwrap();
+        let result = db.save_meeting_transcript(999, "text");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_transcript_persists_across_queries() {
+        let db = Database::new_in_memory().unwrap();
+        let audio = vec![0u8; 50];
+        let id = db.add_meeting("test.wav", &audio, 3000).unwrap();
+        db.save_meeting_transcript(id, "persistent transcript").unwrap();
+
+        // Query multiple times to verify persistence
+        let meetings1 = db.get_meetings(10).unwrap();
+        let meetings2 = db.get_meetings(10).unwrap();
+        let meetings3 = db.get_meetings(10).unwrap();
+
+        assert_eq!(meetings1[0].transcript, Some("persistent transcript".to_string()));
+        assert_eq!(meetings2[0].transcript, Some("persistent transcript".to_string()));
+        assert_eq!(meetings3[0].transcript, Some("persistent transcript".to_string()));
     }
 }

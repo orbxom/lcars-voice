@@ -9,6 +9,7 @@ mod audio_sources;
 mod database;
 mod meeting;
 mod model_manager;
+mod meeting_transcription;
 mod recording;
 mod transcription;
 
@@ -483,6 +484,74 @@ fn get_elapsed_time(state: State<AppState>) -> Result<f64, String> {
     Ok(recorder.elapsed_seconds())
 }
 
+#[tauri::command]
+async fn transcribe_meeting(app: tauri::AppHandle, id: i64) -> Result<String, String> {
+    let app_clone = app.clone();
+
+    tokio::task::spawn_blocking(move || {
+        let state: tauri::State<AppState> = app_clone.state();
+
+        // 1. Get audio from DB
+        let wav_bytes = {
+            let db = state.db.lock().map_err(|e| e.to_string())?;
+            db.get_meeting_audio(id)
+                .map_err(|e| format!("Meeting not found: {}", e))?
+        };
+
+        // 2. Decode WAV to f32 samples
+        let samples = meeting_transcription::decode_wav_blob(&wav_bytes)
+            .map_err(|e| format!("WAV decode failed: {}", e))?;
+
+        // 3. Emit progress: transcribing
+        let _ = app_clone.emit("meeting-transcription-progress", "transcribing");
+
+        // 4. Ensure whisper model is loaded
+        let model = get_current_model(&app_clone);
+        ensure_whisper_context(&app_clone, &state, &model)?;
+
+        // 5. Transcribe with segment timing
+        let segments = {
+            let ctx_guard = state.whisper_ctx.lock().map_err(|e| e.to_string())?;
+            let ctx = ctx_guard.as_ref().ok_or("Whisper context not loaded")?;
+            meeting_transcription::transcribe_meeting_audio(ctx, &samples, &model)?
+        };
+
+        // 6. Filter hallucinations
+        let mut segments = meeting_transcription::filter_hallucinations(segments);
+
+        // 7. Emit progress: diarizing
+        let _ = app_clone.emit("meeting-transcription-progress", "diarizing");
+
+        // 8. Try speaker diarization (graceful fallback if unavailable)
+        if let Some(turns) = meeting_transcription::run_diarization(&wav_bytes) {
+            meeting_transcription::assign_speakers(&mut segments, &turns);
+            segments = meeting_transcription::merge_consecutive_speakers(segments);
+        }
+
+        // 9. Format transcript
+        let transcript = meeting_transcription::format_transcript(&segments);
+
+        // 10. Save to DB
+        {
+            let db = state.db.lock().map_err(|e| e.to_string())?;
+            db.save_meeting_transcript(id, &transcript)
+                .map_err(|e| e.to_string())?;
+        }
+
+        // 11. Emit completion
+        let _ = app_clone.emit("meeting-transcription-complete", id);
+
+        eprintln!(
+            "[LCARS] Meeting {} transcribed: {} chars",
+            id,
+            transcript.len()
+        );
+        Ok(transcript)
+    })
+    .await
+    .map_err(|e| format!("Task error: {}", e))?
+}
+
 fn main() {
     eprintln!("[LCARS] Application starting");
     let db = Database::new().expect("Failed to initialize database");
@@ -554,6 +623,7 @@ fn main() {
             list_audio_sources,
             get_elapsed_time,
             get_meeting_history,
+            transcribe_meeting,
         ])
         .setup(move |app| {
             // Set window icon

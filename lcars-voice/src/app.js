@@ -38,6 +38,7 @@ class LCARSVoiceInterface {
     this.waveformCtx = this.elements.waveform.getContext('2d');
     this.history = [];
     this.meetings = [];
+    this.transcribingMeetings = new Set();
     this.currentModel = 'base';
     this.dropdownOpen = false;
 
@@ -123,6 +124,37 @@ class LCARSVoiceInterface {
       } catch (err) {
         console.error('Failed to copy to clipboard:', err);
         this.flashStatus('ERROR: CLIPBOARD');
+      }
+    });
+
+    // Meeting list action buttons (transcribe / copy)
+    this.elements.meetingList.addEventListener('click', async (e) => {
+      const transcribeBtn = e.target.closest('.transcribe-btn');
+      if (transcribeBtn) {
+        const meetingItem = transcribeBtn.closest('.meeting-item');
+        if (meetingItem) {
+          const id = parseInt(meetingItem.dataset.id, 10);
+          this.transcribeMeeting(id);
+        }
+        return;
+      }
+      const copyBtn = e.target.closest('.copy-transcript-btn');
+      if (copyBtn) {
+        const meetingItem = copyBtn.closest('.meeting-item');
+        if (meetingItem) {
+          const id = parseInt(meetingItem.dataset.id, 10);
+          const meeting = this.meetings.find(m => m.id === id);
+          if (meeting && meeting.transcript) {
+            try {
+              await this.copyToClipboard(meeting.transcript);
+              this.flashStatus('TRANSCRIPT COPIED');
+            } catch (err) {
+              console.error('[LCARS] app: Failed to copy transcript:', err);
+              this.flashStatus('ERROR: CLIPBOARD');
+            }
+          }
+        }
+        return;
       }
     });
 
@@ -809,6 +841,17 @@ class LCARSVoiceInterface {
         .replace(/</g, '&lt;')
         .replace(/>/g, '&gt;');
 
+      // Determine button state
+      let actionBtn = '';
+      const isTranscribing = this.transcribingMeetings.has(entry.id);
+      if (isTranscribing) {
+        actionBtn = '<button class="meeting-action-btn processing" disabled>PROCESSING...</button>';
+      } else if (entry.transcript) {
+        actionBtn = '<button class="meeting-action-btn copy-transcript-btn">COPY</button>';
+      } else {
+        actionBtn = '<button class="meeting-action-btn transcribe-btn">TRANSCRIBE</button>';
+      }
+
       return `
         <div class="history-item meeting-item" data-id="${entry.id}">
           <div class="item-content">
@@ -817,11 +860,34 @@ class LCARSVoiceInterface {
               <span class="item-duration">${duration}</span>
               <span class="item-size">${sizeMB} MB</span>
               <span class="item-time">${date} ${time}</span>
+              ${actionBtn}
             </div>
           </div>
         </div>
       `;
     }).join('');
+  }
+
+  async transcribeMeeting(id) {
+    console.log('[LCARS] app: Transcribing meeting', id);
+    this.transcribingMeetings.add(id);
+    this.renderMeetingHistory();
+
+    try {
+      const transcript = await window.__TAURI__.core.invoke('transcribe_meeting', { id });
+      // Update the local meeting object with the transcript
+      const meeting = this.meetings.find(m => m.id === id);
+      if (meeting) {
+        meeting.transcript = transcript;
+      }
+      this.flashStatus('TRANSCRIPTION COMPLETE');
+    } catch (e) {
+      console.error('[LCARS] app: Meeting transcription failed:', e);
+      this.flashStatus('ERROR: ' + e);
+    } finally {
+      this.transcribingMeetings.delete(id);
+      this.renderMeetingHistory();
+    }
   }
 
   async loadCurrentModel() {

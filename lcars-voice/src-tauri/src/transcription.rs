@@ -79,7 +79,7 @@ pub fn transcribe(
 /// Whisper can hallucinate by repeating the same phrase dozens of times.
 /// This function detects consecutive n-gram repetitions and truncates them,
 /// keeping only the first occurrence.
-fn detect_and_remove_repetitions(text: &str) -> String {
+pub fn detect_and_remove_repetitions(text: &str) -> String {
     if text.is_empty() {
         return String::new();
     }
