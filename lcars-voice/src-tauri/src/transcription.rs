@@ -29,6 +29,13 @@ pub fn transcribe(
     params.set_print_realtime(false);
     params.set_print_timestamps(false);
 
+    // Anti-hallucination parameters
+    params.set_suppress_nst(true);
+    params.set_no_context(true);
+    params.set_entropy_thold(2.0);
+    params.set_logprob_thold(-0.5);
+    params.set_temperature_inc(0.4);
+    params.set_max_tokens(100);
 
     let mut state = ctx
         .create_state()
@@ -43,13 +50,21 @@ pub fn transcribe(
     let mut text = String::new();
     for i in 0..num_segments {
         if let Some(segment) = state.get_segment(i) {
+            if segment.no_speech_probability() > 0.8 {
+                eprintln!(
+                    "[LCARS] transcription: skipping segment {} (no_speech_prob={:.2})",
+                    i,
+                    segment.no_speech_probability()
+                );
+                continue;
+            }
             if let Ok(s) = segment.to_str() {
                 text.push_str(s);
             }
         }
     }
 
-    let text = text.trim().to_string();
+    let text = detect_and_remove_repetitions(&text).trim().to_string();
 
     eprintln!("[LCARS] transcription: Success, {} chars", text.len());
 
@@ -57,6 +72,68 @@ pub fn transcribe(
         text,
         language: "en".to_string(),
     })
+}
+
+/// Detects and removes repetitive phrases from transcription output.
+///
+/// Whisper can hallucinate by repeating the same phrase dozens of times.
+/// This function detects consecutive n-gram repetitions and truncates them,
+/// keeping only the first occurrence.
+fn detect_and_remove_repetitions(text: &str) -> String {
+    if text.is_empty() {
+        return String::new();
+    }
+
+    let words: Vec<&str> = text.split_whitespace().collect();
+    if words.len() < 4 {
+        return text.to_string();
+    }
+
+    // Try n-gram sizes from largest to smallest (catch phrase loops first)
+    for ngram_size in (1..=8).rev() {
+        let max_repeats = if ngram_size <= 2 { 4 } else { 2 };
+
+        if words.len() < ngram_size * (max_repeats + 1) {
+            continue;
+        }
+
+        let mut i = 0;
+        while i + ngram_size <= words.len() {
+            let ngram = &words[i..i + ngram_size];
+            let mut repeat_count = 1;
+
+            // Count consecutive repetitions of this n-gram
+            let mut j = i + ngram_size;
+            while j + ngram_size <= words.len() {
+                if &words[j..j + ngram_size] == ngram {
+                    repeat_count += 1;
+                    j += ngram_size;
+                } else {
+                    break;
+                }
+            }
+
+            if repeat_count > max_repeats {
+                // Found excessive repetition - rebuild text keeping only first occurrence
+                let before = &words[..i + ngram_size];
+                let after = &words[j..];
+                let mut result_words: Vec<&str> = before.to_vec();
+                result_words.extend_from_slice(after);
+                let cleaned = result_words.join(" ");
+                eprintln!(
+                    "[LCARS] transcription: repetition detected and removed ({} -> {} chars)",
+                    text.len(),
+                    cleaned.len()
+                );
+                // Recurse to catch any remaining repetitions
+                return detect_and_remove_repetitions(&cleaned);
+            }
+
+            i += 1;
+        }
+    }
+
+    text.to_string()
 }
 
 #[cfg(test)]
@@ -87,6 +164,53 @@ mod tests {
     }
 
     #[test]
+    fn test_repetition_clean_text_unchanged() {
+        let input = "Hello world this is a normal transcription with no repetition";
+        assert_eq!(detect_and_remove_repetitions(input), input);
+    }
+
+    #[test]
+    fn test_repetition_phrase_loop_truncated() {
+        let input = "Real content here. I'm going to use the code. I'm going to use the code. I'm going to use the code. I'm going to use the code.";
+        let result = detect_and_remove_repetitions(input);
+        // Should keep the real content and only one occurrence of the repeated phrase
+        assert!(result.contains("Real content here."));
+        let count = result.matches("I'm going to use the code.").count();
+        assert!(
+            count <= 2,
+            "Expected at most 2 occurrences, got {}: '{}'",
+            count,
+            result
+        );
+    }
+
+    #[test]
+    fn test_repetition_natural_short_repeats_preserved() {
+        let input = "no no I said no";
+        assert_eq!(detect_and_remove_repetitions(input), input);
+    }
+
+    #[test]
+    fn test_repetition_empty_input() {
+        assert_eq!(detect_and_remove_repetitions(""), "");
+    }
+
+    #[test]
+    fn test_repetition_single_word_excessive() {
+        let input = "Hello blah blah blah blah blah blah blah world";
+        let result = detect_and_remove_repetitions(input);
+        let count = result.matches("blah").count();
+        assert!(
+            count <= 4,
+            "Expected at most 4 'blah', got {}: '{}'",
+            count,
+            result
+        );
+        assert!(result.contains("Hello"));
+        assert!(result.contains("world"));
+    }
+
+    #[test]
     #[ignore]
     fn test_transcribe_silence() {
         // Integration test: requires the base model to be downloaded
@@ -102,11 +226,8 @@ mod tests {
         let mut ctx_params = whisper_rs::WhisperContextParameters::default();
         ctx_params.use_gpu(cfg!(feature = "cuda"));
         ctx_params.flash_attn(cfg!(feature = "cuda"));
-        let ctx = WhisperContext::new_with_params(
-            model_file.to_str().unwrap(),
-            ctx_params,
-        )
-        .expect("failed to load model");
+        let ctx = WhisperContext::new_with_params(model_file.to_str().unwrap(), ctx_params)
+            .expect("failed to load model");
 
         // 2 seconds of silence at 16kHz
         let silence = vec![0.0f32; 16000 * 2];
