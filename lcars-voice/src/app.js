@@ -6,6 +6,7 @@ class LCARSVoiceInterface {
     this.isTranscribing = false;
     this.animationId = null;
     this.idleAnimationId = null;
+    this.transcribeAnimationId = null;
     this.currentMode = 'VoiceNote';
     this.timerInterval = null;
 
@@ -27,6 +28,8 @@ class LCARSVoiceInterface {
       modeValue: document.getElementById('mode-value'),
       modeDropdown: document.getElementById('mode-dropdown'),
       modeOptions: document.querySelectorAll('.mode-option'),
+      sectionDivider: document.querySelector('.section-divider'),
+      historySection: document.querySelector('.history-section'),
     };
 
     this.waveformCtx = this.elements.waveform.getContext('2d');
@@ -180,6 +183,7 @@ class LCARSVoiceInterface {
       console.log('[LCARS] state: isRecording = false, isTranscribing = true');
       this.stopWaveformAnimation();
       this.updateUI('transcribing');
+      this.startTranscribingAnimation();
     });
 
     listen('transcription-complete', async (event) => {
@@ -199,6 +203,7 @@ class LCARSVoiceInterface {
       // Reload history from database
       await this.loadHistory();
       this.renderHistory();
+      this.stopTranscribingAnimation();
       this.updateUI('ready');
       this.startIdleWaveform();
       this.flashStatus('COPIED TO CLIPBOARD');
@@ -211,6 +216,7 @@ class LCARSVoiceInterface {
       this.isRecording = false;
       console.log('[LCARS] state: isRecording = false, isTranscribing = false');
       this.stopWaveformAnimation();
+      this.stopTranscribingAnimation();
       this.updateUI('ready');
       this.startIdleWaveform();
       this.flashStatus('ERROR: ' + event.payload);
@@ -221,6 +227,7 @@ class LCARSVoiceInterface {
       this.isRecording = false;
       this.stopElapsedTimer();
       this.stopWaveformAnimation();
+      this.stopTranscribingAnimation();
       this.updateUI('ready');
       this.startIdleWaveform();
       this.flashStatus('MEETING SAVED');
@@ -267,6 +274,9 @@ class LCARSVoiceInterface {
     this.elements.modeOptions.forEach(opt => {
       opt.classList.toggle('selected', opt.dataset.mode === this.currentMode);
     });
+    const showLog = this.currentMode !== 'Meeting';
+    this.elements.sectionDivider.style.display = showLog ? '' : 'none';
+    this.elements.historySection.style.display = showLog ? '' : 'none';
   }
 
   toggleModeDropdown() {
@@ -427,32 +437,34 @@ class LCARSVoiceInterface {
     const width = canvas.width;
     const height = canvas.height;
 
-    let noiseData = new Array(64).fill(0);
-    let levelHistory = new Array(64).fill(0);
+    // Smoothed display buffer — lerps toward real data each frame
+    let smoothed = null;
+    let pending = false;
 
     const draw = () => {
       if (!this.isRecording) return;
       this.animationId = requestAnimationFrame(draw);
 
-      // Shift history left and add new level
-      levelHistory.shift();
-
-      // Get real audio level from backend
-      window.__TAURI__.core.invoke('get_audio_level')
-        .then(level => {
-          const scaled = Math.min(80, level * 500);
-          levelHistory.push(scaled);
-        })
-        .catch(() => {
-          levelHistory.push(Math.random() * 50);
-        });
-
-      // Smooth the data
-      for (let i = 0; i < noiseData.length; i++) {
-        noiseData[i] += ((levelHistory[i] || 0) - noiseData[i]) * 0.3;
+      // Fetch real waveform samples from the Rust backend (non-blocking)
+      if (!pending) {
+        pending = true;
+        window.__TAURI__.core.invoke('get_waveform_data')
+          .then(data => {
+            if (!smoothed) {
+              smoothed = new Float32Array(data.length);
+            }
+            // Exponential smoothing toward incoming samples (high factor = responsive)
+            for (let i = 0; i < data.length; i++) {
+              smoothed[i] += (data[i] - smoothed[i]) * 0.55;
+            }
+            pending = false;
+          })
+          .catch(() => { pending = false; });
       }
 
-      this.drawWaveform(noiseData);
+      if (smoothed) {
+        this.drawWaveform(smoothed);
+      }
     };
 
     draw();
@@ -465,45 +477,78 @@ class LCARSVoiceInterface {
     }
   }
 
-  drawWaveform(dataArray) {
+  drawWaveform(samples) {
     const canvas = this.elements.waveform;
     const ctx = this.waveformCtx;
     const width = canvas.width;
     const height = canvas.height;
+    const mid = height / 2;
 
-    ctx.fillStyle = 'rgba(0, 0, 0, 0.3)';
+    // Fade previous frame for slight trail effect
+    ctx.fillStyle = 'rgba(0, 0, 0, 0.35)';
     ctx.fillRect(0, 0, width, height);
 
+    // Adaptive scaling: make the peak fill ~85% of half-height.
+    // Mic samples are typically tiny (0.01–0.1 for speech), so we need
+    // a large multiplier.  Cap gain to avoid amplifying silence/noise.
+    let peak = 0;
+    for (let i = 0; i < samples.length; i++) {
+      const abs = Math.abs(samples[i]);
+      if (abs > peak) peak = abs;
+    }
+    const scale = peak > 0.003
+      ? Math.min((mid * 0.6) / peak, mid * 80)
+      : mid * 0.3;
+
+    // Draw filled waveform (top half mirror + bottom half)
+    ctx.beginPath();
+    const sliceWidth = width / (samples.length - 1);
+
+    // Upper contour (positive)
+    for (let i = 0; i < samples.length; i++) {
+      const x = i * sliceWidth;
+      const y = mid - samples[i] * scale;
+      if (i === 0) ctx.moveTo(x, y);
+      else ctx.lineTo(x, y);
+    }
+    // Lower contour (mirrored) — walk back
+    for (let i = samples.length - 1; i >= 0; i--) {
+      const x = i * sliceWidth;
+      const y = mid + samples[i] * scale;
+      ctx.lineTo(x, y);
+    }
+    ctx.closePath();
+
+    // Semi-transparent orange fill
+    ctx.fillStyle = 'rgba(255, 153, 0, 0.25)';
+    ctx.fill();
+
+    // Bright orange stroke for the center waveform line
     ctx.lineWidth = 2;
     ctx.strokeStyle = '#FF9900';
-    ctx.shadowBlur = 10;
+    ctx.shadowBlur = 8;
     ctx.shadowColor = '#FF9900';
 
     ctx.beginPath();
-
-    const sliceWidth = width / dataArray.length;
-    let x = 0;
-
-    for (let i = 0; i < dataArray.length; i++) {
-      const v = dataArray[i] / 50;
-      const y = (v * height) / 2;
-
-      if (i === 0) {
-        ctx.moveTo(x, height / 2 + y - height / 4);
-      } else {
-        ctx.lineTo(x, height / 2 + y - height / 4);
-      }
-
-      x += sliceWidth;
+    for (let i = 0; i < samples.length; i++) {
+      const x = i * sliceWidth;
+      const y = mid - samples[i] * scale;
+      if (i === 0) ctx.moveTo(x, y);
+      else ctx.lineTo(x, y);
     }
-
-    ctx.lineTo(width, height / 2);
     ctx.stroke();
     ctx.shadowBlur = 0;
+
+    // Thin center-line reference
+    ctx.strokeStyle = 'rgba(255, 153, 0, 0.15)';
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.moveTo(0, mid);
+    ctx.lineTo(width, mid);
+    ctx.stroke();
   }
 
   startIdleWaveform() {
-    // Cancel any existing idle animation first
     if (this.idleAnimationId) {
       cancelAnimationFrame(this.idleAnimationId);
       this.idleAnimationId = null;
@@ -513,8 +558,16 @@ class LCARSVoiceInterface {
     const ctx = this.waveformCtx;
     const width = canvas.width;
     const height = canvas.height;
+    const mid = height / 2;
 
-    let offset = 0;
+    let t = 0;
+
+    // Wave definitions: [frequency, speed, amplitude, color, lineWidth]
+    const waves = [
+      { freq: 0.025, speed: 0.8, amp: 10, color: 'rgba(153, 153, 255, 0.5)',  lw: 1.5 }, // primary blue
+      { freq: 0.045, speed: 1.3, amp:  6, color: 'rgba(204, 153, 204, 0.35)', lw: 1   }, // purple harmonic
+      { freq: 0.08,  speed: 2.0, amp:  3, color: 'rgba(170, 170, 255, 0.2)',  lw: 0.5 }, // fast noise floor
+    ];
 
     const drawIdle = () => {
       if (this.isRecording || this.isTranscribing) {
@@ -522,34 +575,132 @@ class LCARSVoiceInterface {
         return;
       }
 
-      ctx.fillStyle = 'rgba(0, 0, 0, 0.1)';
+      // Fade previous frame
+      ctx.fillStyle = 'rgba(0, 0, 0, 0.12)';
       ctx.fillRect(0, 0, width, height);
 
+      // Faint horizontal grid lines
+      ctx.strokeStyle = 'rgba(153, 153, 255, 0.07)';
       ctx.lineWidth = 1;
-      ctx.strokeStyle = 'rgba(153, 153, 255, 0.5)';
-
-      ctx.beginPath();
-
-      for (let x = 0; x < width; x++) {
-        const y = height / 2 + Math.sin((x + offset) * 0.05) * 5;
-        if (x === 0) {
-          ctx.moveTo(x, y);
-        } else {
-          ctx.lineTo(x, y);
-        }
+      for (const frac of [0.25, 0.5, 0.75]) {
+        const gy = height * frac;
+        ctx.beginPath();
+        ctx.moveTo(0, gy);
+        ctx.lineTo(width, gy);
+        ctx.stroke();
       }
 
-      ctx.stroke();
+      // Draw each wave layer
+      for (const w of waves) {
+        ctx.lineWidth = w.lw;
+        ctx.strokeStyle = w.color;
+        ctx.beginPath();
+        for (let x = 0; x <= width; x++) {
+          const y = mid + Math.sin(x * w.freq + t * w.speed * 0.02) * w.amp;
+          if (x === 0) ctx.moveTo(x, y);
+          else ctx.lineTo(x, y);
+        }
+        ctx.stroke();
+      }
 
-      offset += 2;
+      // Traveling pulse along primary wave
+      const pulseX = ((t * 1.2) % (width + 40)) - 20;
+      const pulseY = mid + Math.sin(pulseX * waves[0].freq + t * waves[0].speed * 0.02) * waves[0].amp;
+      const grad = ctx.createRadialGradient(pulseX, pulseY, 0, pulseX, pulseY, 14);
+      grad.addColorStop(0, 'rgba(170, 170, 255, 0.6)');
+      grad.addColorStop(0.4, 'rgba(153, 153, 255, 0.2)');
+      grad.addColorStop(1, 'rgba(153, 153, 255, 0)');
+      ctx.fillStyle = grad;
+      ctx.fillRect(pulseX - 14, pulseY - 14, 28, 28);
+
+      t++;
       this.idleAnimationId = requestAnimationFrame(drawIdle);
     };
 
-    // Clear canvas first
-    ctx.fillStyle = 'rgba(0, 0, 0, 1)';
+    ctx.fillStyle = '#000';
+    ctx.fillRect(0, 0, width, height);
+    drawIdle();
+  }
+
+  startTranscribingAnimation() {
+    this.stopTranscribingAnimation();
+
+    const canvas = this.elements.waveform;
+    const ctx = this.waveformCtx;
+    const width = canvas.width;
+    const height = canvas.height;
+    const mid = height / 2;
+
+    // Generate a fixed set of random bar heights so the pattern is stable
+    const barCount = 48;
+    const barWidth = width / barCount;
+    const barHeights = Array.from({ length: barCount }, () => 0.15 + Math.random() * 0.85);
+
+    let scanX = 0;
+    const scanSpeed = 1.8; // pixels per frame
+
+    // Clear to black before starting
+    ctx.fillStyle = '#000';
     ctx.fillRect(0, 0, width, height);
 
-    drawIdle();
+    const draw = () => {
+      this.transcribeAnimationId = requestAnimationFrame(draw);
+
+      // Fade everything toward black
+      ctx.fillStyle = 'rgba(0, 0, 0, 0.08)';
+      ctx.fillRect(0, 0, width, height);
+
+      // Draw bars — brightest near the scan line, fading away behind it
+      for (let i = 0; i < barCount; i++) {
+        const bx = i * barWidth;
+        const dist = scanX - (bx + barWidth / 2);
+        // Bars light up as the scan passes over them, then fade
+        let intensity;
+        if (dist < 0) {
+          // Ahead of scan — dim anticipation glow
+          intensity = Math.max(0, 1 - Math.abs(dist) / 40) * 0.15;
+        } else if (dist < 60) {
+          // Just passed — bright
+          intensity = 1 - dist / 60;
+        } else {
+          intensity = 0;
+        }
+
+        if (intensity > 0.01) {
+          const h = barHeights[i] * mid * 0.85 * intensity;
+          const alpha = intensity * 0.6;
+          ctx.fillStyle = `rgba(255, 153, 0, ${alpha})`;
+          ctx.fillRect(bx + 1, mid - h, barWidth - 2, h * 2);
+        }
+      }
+
+      // Draw scan line
+      const grad = ctx.createLinearGradient(scanX - 6, 0, scanX + 6, 0);
+      grad.addColorStop(0, 'rgba(255, 153, 0, 0)');
+      grad.addColorStop(0.5, 'rgba(255, 153, 0, 0.9)');
+      grad.addColorStop(1, 'rgba(255, 153, 0, 0)');
+      ctx.fillStyle = grad;
+      ctx.fillRect(scanX - 6, 0, 12, height);
+
+      // Advance scan, wrap around
+      scanX += scanSpeed;
+      if (scanX > width + 60) {
+        scanX = -20;
+        // Regenerate bar heights each sweep for variety
+        for (let i = 0; i < barCount; i++) {
+          barHeights[i] = 0.15 + Math.random() * 0.85;
+        }
+      }
+    };
+
+    draw();
+  }
+
+  stopTranscribingAnimation() {
+    if (this.transcribeAnimationId) {
+      cancelAnimationFrame(this.transcribeAnimationId);
+      this.transcribeAnimationId = null;
+    }
   }
 
   // History management via Tauri commands

@@ -4,6 +4,7 @@ use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use rubato::{
     Resampler, SincFixedIn, SincInterpolationParameters, SincInterpolationType, WindowFunction,
 };
+use std::collections::VecDeque;
 use std::sync::{
     atomic::{AtomicBool, AtomicU32, Ordering},
     Arc, Mutex,
@@ -15,6 +16,11 @@ pub enum CaptureMode {
     MicAndMonitor,
 }
 
+/// Number of raw mono samples kept for waveform visualization.
+const WAVEFORM_BUFFER_SIZE: usize = 2048;
+/// Number of downsampled points returned to the frontend.
+const WAVEFORM_DISPLAY_POINTS: usize = 128;
+
 pub struct Recorder {
     stream: Option<cpal::Stream>,
     buffer: Arc<Mutex<Vec<f32>>>,
@@ -23,6 +29,9 @@ pub struct Recorder {
     device_sample_rate: u32,
     device_channels: u16,
     start_time: Option<Instant>,
+
+    /// Ring buffer of recent mono samples for real-time waveform visualization.
+    waveform_buffer: Arc<Mutex<VecDeque<f32>>>,
 
     // Monitor capture via parec subprocess
     monitor_process: Option<std::process::Child>,
@@ -56,6 +65,7 @@ impl Recorder {
             device_sample_rate: 0,
             device_channels: 0,
             start_time: None,
+            waveform_buffer: Arc::new(Mutex::new(VecDeque::with_capacity(WAVEFORM_BUFFER_SIZE))),
             monitor_process: None,
             monitor_reader_thread: None,
             monitor_buffer: Arc::new(Mutex::new(Vec::new())),
@@ -203,6 +213,8 @@ impl Recorder {
         let buffer = Arc::clone(&self.buffer);
         let is_active = Arc::clone(&self.is_active);
         let rms_level = Arc::clone(&self.rms_level);
+        let waveform_buf = Arc::clone(&self.waveform_buffer);
+        let channels = self.device_channels;
         let mut sample_counter: usize = 0;
 
         let stream_config: cpal::StreamConfig = config.config();
@@ -217,6 +229,18 @@ impl Recorder {
 
                     if let Ok(mut buf) = buffer.lock() {
                         buf.extend_from_slice(data);
+                    }
+
+                    // Feed mono samples into the waveform visualization buffer
+                    if let Ok(mut wf) = waveform_buf.try_lock() {
+                        let ch = channels as usize;
+                        for frame in data.chunks(ch) {
+                            let mono = frame.iter().sum::<f32>() / ch as f32;
+                            if wf.len() >= WAVEFORM_BUFFER_SIZE {
+                                wf.pop_front();
+                            }
+                            wf.push_back(mono);
+                        }
                     }
 
                     // Compute RMS every ~1600 samples for UI updates
@@ -367,8 +391,11 @@ impl Recorder {
             audio_data.len()
         );
 
-        // Reset RMS
+        // Reset RMS and waveform buffer
         self.rms_level.store(0f32.to_bits(), Ordering::SeqCst);
+        if let Ok(mut wf) = self.waveform_buffer.lock() {
+            wf.clear();
+        }
 
         Ok(RecordingResult {
             audio_data,
@@ -378,6 +405,31 @@ impl Recorder {
 
     pub fn current_rms_level(&self) -> f32 {
         f32::from_bits(self.rms_level.load(Ordering::SeqCst))
+    }
+
+    /// Return downsampled waveform data for visualization.
+    ///
+    /// Takes the last `WAVEFORM_BUFFER_SIZE` raw mono samples and downsamples
+    /// them to `WAVEFORM_DISPLAY_POINTS` values (each in roughly -1.0..1.0).
+    pub fn current_waveform_data(&self) -> Vec<f32> {
+        let wf = self.waveform_buffer.lock().unwrap_or_else(|e| e.into_inner());
+        let len = wf.len();
+        if len == 0 {
+            return vec![0.0; WAVEFORM_DISPLAY_POINTS];
+        }
+        if len <= WAVEFORM_DISPLAY_POINTS {
+            return wf.iter().copied().collect();
+        }
+        // Downsample by averaging windows
+        let window = len / WAVEFORM_DISPLAY_POINTS;
+        (0..WAVEFORM_DISPLAY_POINTS)
+            .map(|i| {
+                let start = i * window;
+                let end = (start + window).min(len);
+                let sum: f32 = (start..end).map(|j| wf[j]).sum();
+                sum / (end - start) as f32
+            })
+            .collect()
     }
 
     pub fn elapsed_seconds(&self) -> f64 {

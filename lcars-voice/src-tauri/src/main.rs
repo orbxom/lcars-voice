@@ -406,6 +406,12 @@ fn get_audio_level(state: State<AppState>) -> Result<f32, String> {
 }
 
 #[tauri::command]
+fn get_waveform_data(state: State<AppState>) -> Result<Vec<f32>, String> {
+    let recorder = state.recorder.lock().map_err(|e| e.to_string())?;
+    Ok(recorder.current_waveform_data())
+}
+
+#[tauri::command]
 fn get_recording_mode(app: tauri::AppHandle) -> Result<String, String> {
     let store = app.store("settings.json").map_err(|e| e.to_string())?;
     let mode = store
@@ -512,6 +518,7 @@ fn main() {
             is_model_downloaded,
             download_model,
             get_audio_level,
+            get_waveform_data,
             get_recording_mode,
             set_recording_mode,
             list_audio_sources,
