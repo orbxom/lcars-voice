@@ -13,7 +13,7 @@ mod recording;
 mod transcription;
 
 use audio_sources::AudioSourceInfo;
-use database::{Database, Transcription};
+use database::{Database, MeetingRecord, Transcription};
 use meeting::MeetingSession;
 use recording::Recorder;
 use std::path::PathBuf;
@@ -139,13 +139,23 @@ fn add_transcription(
     .map_err(|e| e.to_string())
 }
 
+#[tauri::command]
+fn get_meeting_history(
+    state: State<AppState>,
+    limit: Option<usize>,
+) -> Result<Vec<MeetingRecord>, String> {
+    let db = state.db.lock().map_err(|e| e.to_string())?;
+    db.get_meetings(limit.unwrap_or(100))
+        .map_err(|e| e.to_string())
+}
+
 fn handle_start_recording(app: &tauri::AppHandle) -> Result<(), String> {
     let state = app.state::<AppState>();
     let mode = *state.recording_mode.lock().map_err(|e| e.to_string())?;
 
     let (capture_mode, session) = if mode == RecordingMode::Meeting {
-        let session = MeetingSession::new(None)?;
-        eprintln!("[LCARS] Meeting recording to {:?}", session.output_dir);
+        let session = MeetingSession::new();
+        eprintln!("[LCARS] Meeting recording started: {}", session.filename());
         let cm = if audio_sources::is_monitor_capture_available() {
             eprintln!("[LCARS] Monitor capture available (parec found)");
             recording::CaptureMode::MicAndMonitor
@@ -160,10 +170,6 @@ fn handle_start_recording(app: &tauri::AppHandle) -> Result<(), String> {
 
     let mut recorder = state.recorder.lock().map_err(|e| e.to_string())?;
     if let Err(e) = recorder.start(capture_mode) {
-        if let Some(ref s) = session {
-            let _ = std::fs::remove_dir_all(&s.output_dir);
-            eprintln!("[LCARS] Cleaned up session dir after start failure");
-        }
         return Err(e);
     }
 
@@ -240,29 +246,53 @@ fn handle_stop_and_transcribe(app: &tauri::AppHandle) {
         };
 
         if mode == RecordingMode::Meeting {
-            // Save meeting files
+            // Encode audio to WAV and save to SQLite
             let mut session_guard = state
                 .meeting_session
                 .lock()
                 .unwrap_or_else(|e| e.into_inner());
             if let Some(session) = session_guard.take() {
-                if let Err(e) = session.save_audio(&recording.audio_data) {
-                    let _ = app_clone.emit(
-                        "transcription-error",
-                        format!("Failed to save audio: {}", e),
-                    );
-                    return;
+                let wav_bytes = match session.encode_wav(&recording.audio_data) {
+                    Ok(bytes) => bytes,
+                    Err(e) => {
+                        let _ = app_clone.emit(
+                            "transcription-error",
+                            format!("Failed to encode WAV: {}", e),
+                        );
+                        return;
+                    }
+                };
+
+                let filename = session.filename();
+
+                match state.db.lock() {
+                    Ok(db) => {
+                        if let Err(e) =
+                            db.add_meeting(&filename, &wav_bytes, recording.duration_ms)
+                        {
+                            eprintln!("[LCARS] Failed to save meeting to DB: {}", e);
+                            let _ = app_clone.emit(
+                                "transcription-error",
+                                format!("Failed to save meeting: {}", e),
+                            );
+                            return;
+                        }
+                    }
+                    Err(e) => {
+                        let _ = app_clone.emit(
+                            "transcription-error",
+                            format!("DB lock error: {}", e),
+                        );
+                        return;
+                    }
                 }
-                if let Err(e) = session.save_metadata(recording.duration_ms as f64 / 1000.0) {
-                    eprintln!("[LCARS] Warning: failed to save metadata: {}", e);
-                }
-                let output_dir = session.output_dir.to_string_lossy().to_string();
+
                 send_notification(
                     &app_clone,
                     "LCARS Voice",
-                    &format!("Meeting saved to {}", output_dir),
+                    &format!("Meeting saved: {}", filename),
                 );
-                let _ = app_clone.emit("meeting-saved", output_dir);
+                let _ = app_clone.emit("meeting-saved", filename);
             }
         } else {
             let _ = app_clone.emit("transcribing", ());
@@ -523,6 +553,7 @@ fn main() {
             set_recording_mode,
             list_audio_sources,
             get_elapsed_time,
+            get_meeting_history,
         ])
         .setup(move |app| {
             // Set window icon

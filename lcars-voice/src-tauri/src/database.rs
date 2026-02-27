@@ -13,6 +13,15 @@ pub struct Transcription {
     pub model: String,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MeetingRecord {
+    pub id: i64,
+    pub filename: String,
+    pub timestamp: String,
+    pub duration_ms: i64,
+    pub size_bytes: i64,
+}
+
 pub struct Database {
     conn: Connection,
 }
@@ -35,6 +44,18 @@ impl Database {
                 timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
                 duration_ms INTEGER,
                 model TEXT DEFAULT 'base'
+            )",
+            [],
+        )?;
+
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS meetings (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                filename TEXT NOT NULL,
+                audio_data BLOB NOT NULL,
+                timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
+                duration_ms INTEGER NOT NULL,
+                size_bytes INTEGER NOT NULL
             )",
             [],
         )?;
@@ -105,6 +126,42 @@ impl Database {
 
         rows.collect()
     }
+
+    pub fn add_meeting(
+        &self,
+        filename: &str,
+        audio_data: &[u8],
+        duration_ms: i64,
+    ) -> Result<i64> {
+        let size_bytes = audio_data.len() as i64;
+        self.conn.execute(
+            "INSERT INTO meetings (filename, audio_data, duration_ms, size_bytes)
+             VALUES (?1, ?2, ?3, ?4)",
+            params![filename, audio_data, duration_ms, size_bytes],
+        )?;
+        Ok(self.conn.last_insert_rowid())
+    }
+
+    pub fn get_meetings(&self, limit: usize) -> Result<Vec<MeetingRecord>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, filename, timestamp, duration_ms, size_bytes
+             FROM meetings
+             ORDER BY timestamp DESC
+             LIMIT ?1",
+        )?;
+
+        let rows = stmt.query_map([limit], |row| {
+            Ok(MeetingRecord {
+                id: row.get(0)?,
+                filename: row.get(1)?,
+                timestamp: row.get(2)?,
+                duration_ms: row.get(3)?,
+                size_bytes: row.get(4)?,
+            })
+        })?;
+
+        rows.collect()
+    }
 }
 
 #[cfg(test)]
@@ -118,6 +175,17 @@ impl Database {
                 timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
                 duration_ms INTEGER,
                 model TEXT DEFAULT 'base'
+            )",
+            [],
+        )?;
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS meetings (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                filename TEXT NOT NULL,
+                audio_data BLOB NOT NULL,
+                timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
+                duration_ms INTEGER NOT NULL,
+                size_bytes INTEGER NOT NULL
             )",
             [],
         )?;
@@ -192,5 +260,53 @@ mod tests {
         let history = db.get_history(1).unwrap();
         assert_eq!(history[0].duration_ms, Some(5000));
         assert_eq!(history[0].model, "medium");
+    }
+
+    #[test]
+    fn test_add_and_get_meeting() {
+        let db = Database::new_in_memory().unwrap();
+        let audio = vec![0u8; 100];
+        let id = db
+            .add_meeting("meeting-2025-02-27-143045.wav", &audio, 5000)
+            .unwrap();
+        assert!(id > 0);
+        let meetings = db.get_meetings(10).unwrap();
+        assert_eq!(meetings.len(), 1);
+        assert_eq!(meetings[0].filename, "meeting-2025-02-27-143045.wav");
+        assert_eq!(meetings[0].duration_ms, 5000);
+        assert_eq!(meetings[0].size_bytes, 100);
+    }
+
+    #[test]
+    fn test_get_meetings_ordering() {
+        let db = Database::new_in_memory().unwrap();
+        db.add_meeting("first.wav", &[0u8; 10], 1000).unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(1100));
+        db.add_meeting("second.wav", &[0u8; 10], 2000).unwrap();
+        let meetings = db.get_meetings(10).unwrap();
+        assert_eq!(meetings[0].filename, "second.wav");
+        assert_eq!(meetings[1].filename, "first.wav");
+    }
+
+    #[test]
+    fn test_get_meetings_limit() {
+        let db = Database::new_in_memory().unwrap();
+        for i in 0..5 {
+            db.add_meeting(&format!("meeting-{}.wav", i), &[0u8; 10], 1000)
+                .unwrap();
+        }
+        let meetings = db.get_meetings(3).unwrap();
+        assert_eq!(meetings.len(), 3);
+    }
+
+    #[test]
+    fn test_meeting_does_not_affect_transcriptions() {
+        let db = Database::new_in_memory().unwrap();
+        db.add_meeting("test.wav", &[0u8; 10], 1000).unwrap();
+        db.add_transcription("hello", None, "base").unwrap();
+        let meetings = db.get_meetings(10).unwrap();
+        let transcriptions = db.get_history(10).unwrap();
+        assert_eq!(meetings.len(), 1);
+        assert_eq!(transcriptions.len(), 1);
     }
 }

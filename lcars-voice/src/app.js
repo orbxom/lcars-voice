@@ -30,10 +30,14 @@ class LCARSVoiceInterface {
       modeOptions: document.querySelectorAll('.mode-option'),
       sectionDivider: document.querySelector('.section-divider'),
       historySection: document.querySelector('.history-section'),
+      meetingDivider: document.querySelector('.meeting-divider'),
+      meetingSection: document.querySelector('.meeting-section'),
+      meetingList: document.getElementById('meeting-list'),
     };
 
     this.waveformCtx = this.elements.waveform.getContext('2d');
     this.history = [];
+    this.meetings = [];
     this.currentModel = 'base';
     this.dropdownOpen = false;
 
@@ -47,6 +51,8 @@ class LCARSVoiceInterface {
     this.updateStardate();
     await this.loadHistory();
     this.renderHistory();
+    await this.loadMeetingHistory();
+    this.renderMeetingHistory();
     await this.loadCurrentModel();
     await this.loadCurrentMode();
     await this.loadAppVersion();
@@ -222,14 +228,16 @@ class LCARSVoiceInterface {
       this.flashStatus('ERROR: ' + event.payload);
     });
 
-    listen('meeting-saved', (event) => {
-      console.log('[LCARS] event: Meeting saved to', event.payload);
+    listen('meeting-saved', async (event) => {
+      console.log('[LCARS] event: Meeting saved:', event.payload);
       this.isRecording = false;
       this.stopElapsedTimer();
       this.stopWaveformAnimation();
       this.stopTranscribingAnimation();
       this.updateUI('ready');
       this.startIdleWaveform();
+      await this.loadMeetingHistory();
+      this.renderMeetingHistory();
       this.flashStatus('MEETING SAVED');
     });
 
@@ -274,9 +282,11 @@ class LCARSVoiceInterface {
     this.elements.modeOptions.forEach(opt => {
       opt.classList.toggle('selected', opt.dataset.mode === this.currentMode);
     });
-    const showLog = this.currentMode !== 'Meeting';
-    this.elements.sectionDivider.style.display = showLog ? '' : 'none';
-    this.elements.historySection.style.display = showLog ? '' : 'none';
+    const isMeeting = this.currentMode === 'Meeting';
+    this.elements.sectionDivider.style.display = isMeeting ? 'none' : '';
+    this.elements.historySection.style.display = isMeeting ? 'none' : '';
+    this.elements.meetingDivider.style.display = isMeeting ? '' : 'none';
+    this.elements.meetingSection.style.display = isMeeting ? '' : 'none';
   }
 
   toggleModeDropdown() {
@@ -758,6 +768,57 @@ class LCARSVoiceInterface {
             <span class="item-time">${time}</span>
           </div>
           <button class="copy-btn" title="Copy to clipboard">&#x29C9;</button>
+        </div>
+      `;
+    }).join('');
+  }
+
+  async loadMeetingHistory() {
+    try {
+      const meetings = await window.__TAURI__.core.invoke('get_meeting_history', { limit: 100 });
+      this.meetings = meetings;
+    } catch (e) {
+      console.error('[LCARS] app: Failed to load meeting history:', e);
+      this.meetings = [];
+    }
+  }
+
+  renderMeetingHistory() {
+    this.elements.meetingList.innerHTML = this.meetings.map(entry => {
+      const time = new Date(entry.timestamp).toLocaleTimeString('en-US', {
+        hour: '2-digit',
+        minute: '2-digit',
+        hour12: false,
+      });
+
+      const date = new Date(entry.timestamp).toLocaleDateString('en-US', {
+        month: 'short',
+        day: 'numeric',
+      });
+
+      const totalSec = Math.floor(entry.duration_ms / 1000);
+      const h = Math.floor(totalSec / 3600);
+      const m = Math.floor((totalSec % 3600) / 60);
+      const s = totalSec % 60;
+      const duration = `${String(h).padStart(2,'0')}:${String(m).padStart(2,'0')}:${String(s).padStart(2,'0')}`;
+
+      const sizeMB = (entry.size_bytes / (1024 * 1024)).toFixed(1);
+
+      const escapedFilename = entry.filename
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;');
+
+      return `
+        <div class="history-item meeting-item" data-id="${entry.id}">
+          <div class="item-content">
+            <span class="item-text">${escapedFilename}</span>
+            <div style="display: flex; gap: 12px; align-items: center;">
+              <span class="item-duration">${duration}</span>
+              <span class="item-size">${sizeMB} MB</span>
+              <span class="item-time">${date} ${time}</span>
+            </div>
+          </div>
         </div>
       `;
     }).join('');
