@@ -231,6 +231,7 @@ class LCARSVoiceInterface {
       this.isTranscribing = true;
       console.log('[LCARS] state: isRecording = false, isTranscribing = true');
       this.stopWaveformAnimation();
+      this.meetingTranscriptionProgress = { stage: 'transcribing', percent: 0 };
       this.updateUI('transcribing');
       this.startTranscribingAnimation();
     });
@@ -377,6 +378,7 @@ class LCARSVoiceInterface {
       this.currentMode = mode;
       this.updateModeDisplay();
       this.closeModeDropdown();
+      this.updateUI('ready');
       this.flashStatus('MODE: ' + (mode === 'Meeting' ? 'MEETING' : 'VOICE NOTE'));
     } catch (e) {
       console.error('[LCARS] app: Failed to set recording mode:', e);
@@ -1082,3 +1084,8 @@ class LCARSVoiceInterface {
 document.addEventListener('DOMContentLoaded', () => {
   window.lcarsApp = new LCARSVoiceInterface();
 });
+
+// Export for testing
+if (typeof module !== 'undefined' && module.exports) {
+  module.exports = { LCARSVoiceInterface };
+}
