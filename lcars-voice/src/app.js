@@ -158,6 +158,16 @@ class LCARSVoiceInterface {
       }
     });
 
+    // Meeting list double-click to rename
+    this.elements.meetingList.addEventListener('dblclick', (e) => {
+      const itemText = e.target.closest('.item-text');
+      if (!itemText) return;
+      const meetingItem = itemText.closest('.meeting-item');
+      if (!meetingItem) return;
+      const id = parseInt(meetingItem.dataset.id, 10);
+      this.startRenaming(id, itemText);
+    });
+
     // Model selector dropdown
     this.elements.modelBtn?.addEventListener('click', (e) => {
       e.stopPropagation();
@@ -888,6 +898,59 @@ class LCARSVoiceInterface {
       this.transcribingMeetings.delete(id);
       this.renderMeetingHistory();
     }
+  }
+
+  startRenaming(id, spanElement) {
+    const meeting = this.meetings.find(m => m.id === id);
+    if (!meeting) return;
+
+    const currentName = meeting.filename;
+    const input = document.createElement('input');
+    input.type = 'text';
+    input.className = 'rename-input';
+    input.value = currentName;
+    spanElement.textContent = '';
+    spanElement.appendChild(input);
+    input.focus();
+
+    // Select text before .wav extension
+    const dotIndex = currentName.lastIndexOf('.');
+    input.setSelectionRange(0, dotIndex > 0 ? dotIndex : currentName.length);
+
+    let saved = false;
+    const save = async () => {
+      if (saved) return;
+      saved = true;
+      const newName = input.value.trim();
+      if (newName && newName !== currentName) {
+        try {
+          await window.__TAURI__.core.invoke('rename_meeting', { id, newFilename: newName });
+          meeting.filename = newName;
+          this.flashStatus('RENAMED');
+        } catch (e) {
+          console.error('[LCARS] app: Rename failed:', e);
+          this.flashStatus('ERROR: RENAME');
+        }
+      }
+      this.renderMeetingHistory();
+    };
+
+    const cancel = () => {
+      if (saved) return;
+      saved = true;
+      this.renderMeetingHistory();
+    };
+
+    input.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') {
+        e.preventDefault();
+        save();
+      } else if (e.key === 'Escape') {
+        e.preventDefault();
+        cancel();
+      }
+    });
+    input.addEventListener('blur', () => save());
   }
 
   async loadCurrentModel() {

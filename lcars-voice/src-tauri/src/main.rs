@@ -150,6 +150,13 @@ fn get_meeting_history(
         .map_err(|e| e.to_string())
 }
 
+#[tauri::command]
+fn rename_meeting(state: State<AppState>, id: i64, new_filename: String) -> Result<(), String> {
+    let db = state.db.lock().map_err(|e| e.to_string())?;
+    db.rename_meeting(id, &new_filename)
+        .map_err(|e| e.to_string())
+}
+
 fn handle_start_recording(app: &tauri::AppHandle) -> Result<(), String> {
     let state = app.state::<AppState>();
     let mode = *state.recording_mode.lock().map_err(|e| e.to_string())?;
@@ -623,6 +630,7 @@ fn main() {
             list_audio_sources,
             get_elapsed_time,
             get_meeting_history,
+            rename_meeting,
             transcribe_meeting,
         ])
         .setup(move |app| {

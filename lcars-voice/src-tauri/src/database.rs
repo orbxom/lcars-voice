@@ -187,6 +187,17 @@ impl Database {
         }
         Ok(())
     }
+
+    pub fn rename_meeting(&self, id: i64, new_filename: &str) -> Result<()> {
+        let rows = self.conn.execute(
+            "UPDATE meetings SET filename = ?1 WHERE id = ?2",
+            params![new_filename, id],
+        )?;
+        if rows == 0 {
+            return Err(rusqlite::Error::QueryReturnedNoRows);
+        }
+        Ok(())
+    }
 }
 
 #[cfg(test)]
@@ -395,5 +406,23 @@ mod tests {
         assert_eq!(meetings1[0].transcript, Some("persistent transcript".to_string()));
         assert_eq!(meetings2[0].transcript, Some("persistent transcript".to_string()));
         assert_eq!(meetings3[0].transcript, Some("persistent transcript".to_string()));
+    }
+
+    #[test]
+    fn test_rename_meeting() {
+        let db = Database::new_in_memory().unwrap();
+        let id = db
+            .add_meeting("meeting-2026-02-27-120000.wav", &[0u8; 100], 5000)
+            .unwrap();
+        db.rename_meeting(id, "standup-notes.wav").unwrap();
+        let meetings = db.get_meetings(10).unwrap();
+        assert_eq!(meetings[0].filename, "standup-notes.wav");
+    }
+
+    #[test]
+    fn test_rename_meeting_not_found() {
+        let db = Database::new_in_memory().unwrap();
+        let result = db.rename_meeting(999, "nope.wav");
+        assert!(result.is_err());
     }
 }
