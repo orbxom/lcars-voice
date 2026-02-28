@@ -11,10 +11,12 @@ pub struct TranscriptionResult {
 /// Transcribes audio data using a pre-loaded WhisperContext.
 ///
 /// `audio_data` must be f32 PCM samples at 16kHz mono.
+/// If `app` is provided, emits `meeting-transcription-progress` events with percent updates.
 pub fn transcribe(
     ctx: &WhisperContext,
     audio_data: &[f32],
     model_name: &str,
+    app: Option<tauri::AppHandle>,
 ) -> Result<TranscriptionResult, String> {
     eprintln!(
         "[LCARS] transcription: model={}, samples={}",
@@ -36,6 +38,16 @@ pub fn transcribe(
     params.set_logprob_thold(-0.5);
     params.set_temperature_inc(0.4);
     params.set_max_tokens(100);
+
+    if let Some(app_cb) = app {
+        use tauri::Emitter;
+        params.set_progress_callback_safe(move |percent: i32| {
+            let _ = app_cb.emit(
+                "meeting-transcription-progress",
+                serde_json::json!({"stage": "transcribing", "percent": percent}),
+            );
+        });
+    }
 
     let mut state = ctx
         .create_state()
@@ -231,7 +243,7 @@ mod tests {
 
         // 2 seconds of silence at 16kHz
         let silence = vec![0.0f32; 16000 * 2];
-        let result = transcribe(&ctx, &silence, "base").expect("transcription should succeed");
+        let result = transcribe(&ctx, &silence, "base", None).expect("transcription should succeed");
         // Silence should produce very short or empty text
         assert!(
             result.text.len() < 100,

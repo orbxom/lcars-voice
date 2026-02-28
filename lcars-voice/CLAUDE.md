@@ -15,6 +15,9 @@ cd src-tauri && cargo tauri dev
 # Production build (creates .deb and .AppImage)
 cd src-tauri && cargo tauri build
 
+# Install after build
+sudo dpkg -i "src-tauri/target/release/bundle/deb/LCARS Voice_0.2.0_amd64.deb"
+
 # Run Rust tests
 cd src-tauri && cargo test
 
@@ -108,3 +111,11 @@ Notifications are sent on a background thread to avoid blocking the main/hotkey 
 - **Meeting saved**: "LCARS Voice" / "Meeting saved to {path}"
 
 System dependency: `notify-send` (from `libnotify-bin`, typically pre-installed on Linux desktops).
+
+## Post-Build Workflow
+
+After running `cargo tauri build`, always show the user the install command:
+```
+sudo dpkg -i "src-tauri/target/release/bundle/deb/LCARS Voice_0.2.0_amd64.deb"
+```
+Note: Update the version in the path if `Cargo.toml` version changes.

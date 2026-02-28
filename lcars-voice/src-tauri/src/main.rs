@@ -337,7 +337,7 @@ fn handle_stop_and_transcribe(app: &tauri::AppHandle) {
                 }
             };
 
-            match transcription::transcribe(ctx, &recording.audio_data, &model) {
+            match transcription::transcribe(ctx, &recording.audio_data, &model, Some(app_clone.clone())) {
                 Ok(result) => {
                     // Step 4: Save to DB with real duration
                     if let Ok(db) = state.db.lock() {
@@ -510,7 +510,8 @@ async fn transcribe_meeting(app: tauri::AppHandle, id: i64) -> Result<String, St
             .map_err(|e| format!("WAV decode failed: {}", e))?;
 
         // 3. Emit progress: transcribing
-        let _ = app_clone.emit("meeting-transcription-progress", "transcribing");
+        let _ = app_clone.emit("meeting-transcription-progress",
+            serde_json::json!({"stage": "transcribing", "percent": 0}));
 
         // 4. Ensure whisper model is loaded
         let model = get_current_model(&app_clone);
@@ -520,14 +521,15 @@ async fn transcribe_meeting(app: tauri::AppHandle, id: i64) -> Result<String, St
         let segments = {
             let ctx_guard = state.whisper_ctx.lock().map_err(|e| e.to_string())?;
             let ctx = ctx_guard.as_ref().ok_or("Whisper context not loaded")?;
-            meeting_transcription::transcribe_meeting_audio(ctx, &samples, &model)?
+            meeting_transcription::transcribe_meeting_audio(ctx, &samples, &model, Some(app_clone.clone()))?
         };
 
         // 6. Filter hallucinations
         let mut segments = meeting_transcription::filter_hallucinations(segments);
 
         // 7. Emit progress: diarizing
-        let _ = app_clone.emit("meeting-transcription-progress", "diarizing");
+        let _ = app_clone.emit("meeting-transcription-progress",
+            serde_json::json!({"stage": "diarizing", "percent": null}));
 
         // 8. Try speaker diarization (graceful fallback if unavailable)
         if let Some(turns) = meeting_transcription::run_diarization(&wav_bytes) {

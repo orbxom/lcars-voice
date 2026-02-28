@@ -255,10 +255,12 @@ pub fn format_transcript(segments: &[WhisperSegment]) -> String {
 ///
 /// Similar to the voice note transcription but extracts per-segment timing data
 /// and uses higher max_tokens for longer meeting recordings.
+/// When an `app` handle is provided, emits progress events during inference.
 pub fn transcribe_meeting_audio(
     ctx: &whisper_rs::WhisperContext,
     audio_data: &[f32],
     model_name: &str,
+    app: Option<tauri::AppHandle>,
 ) -> Result<Vec<WhisperSegment>, String> {
     use whisper_rs::{FullParams, SamplingStrategy};
 
@@ -282,6 +284,17 @@ pub fn transcribe_meeting_audio(
     params.set_logprob_thold(-0.5);
     params.set_temperature_inc(0.4);
     params.set_max_tokens(500);
+
+    // Register progress callback to emit real-time transcription progress
+    if let Some(app_cb) = app {
+        use tauri::Emitter;
+        params.set_progress_callback_safe(move |percent: i32| {
+            let _ = app_cb.emit(
+                "meeting-transcription-progress",
+                serde_json::json!({"stage": "transcribing", "percent": percent}),
+            );
+        });
+    }
 
     let mut state = ctx
         .create_state()

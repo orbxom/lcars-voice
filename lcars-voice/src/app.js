@@ -9,6 +9,7 @@ class LCARSVoiceInterface {
     this.transcribeAnimationId = null;
     this.currentMode = 'VoiceNote';
     this.timerInterval = null;
+    this.meetingTranscriptionProgress = { stage: null, percent: 0 };
 
     this.elements = {
       frame: document.querySelector('.lcars-frame'),
@@ -236,6 +237,7 @@ class LCARSVoiceInterface {
 
     listen('transcription-complete', async (event) => {
       console.log('[LCARS] event: Received transcription-complete');
+      this.meetingTranscriptionProgress = { stage: null, percent: 0 };
       this.isTranscribing = false;
       const text = event.payload;
       console.log('[LCARS] event: Transcription text =', JSON.stringify(text));
@@ -260,6 +262,7 @@ class LCARSVoiceInterface {
     listen('transcription-error', (event) => {
       console.log('[LCARS] event: Received transcription-error');
       console.log('[LCARS] event: Error payload =', event.payload);
+      this.meetingTranscriptionProgress = { stage: null, percent: 0 };
       this.isTranscribing = false;
       this.isRecording = false;
       console.log('[LCARS] state: isRecording = false, isTranscribing = false');
@@ -288,6 +291,30 @@ class LCARSVoiceInterface {
       console.log(`[LCARS] event: Model download ${model} ${percent}%`);
       this.showDownloadProgress(model, percent);
     });
+
+    listen('meeting-transcription-progress', (event) => {
+      const { stage, percent } = event.payload;
+      console.log(`[LCARS] event: Meeting transcription progress: stage=${stage}, percent=${percent}`);
+      this.meetingTranscriptionProgress = { stage, percent: percent ?? 0 };
+      this.updateTranscriptionProgress();
+      if (this.isTranscribing && percent != null) {
+        this.elements.statusText.textContent = `TRANSCRIBING ${percent}%`;
+      }
+    });
+  }
+
+  updateTranscriptionProgress() {
+    const { stage } = this.meetingTranscriptionProgress;
+    // Start transcribing animation if not already running
+    if (stage && !this.transcribeAnimationId) {
+      if (this.idleAnimationId) {
+        cancelAnimationFrame(this.idleAnimationId);
+        this.idleAnimationId = null;
+      }
+      this.startTranscribingAnimation();
+    }
+    // Re-render meeting list to update button text
+    this.renderMeetingHistory();
   }
 
   updateStardate() {
@@ -698,49 +725,88 @@ class LCARSVoiceInterface {
     const draw = () => {
       this.transcribeAnimationId = requestAnimationFrame(draw);
 
+      const progress = this.meetingTranscriptionProgress;
+      const hasProgress = progress.stage === 'transcribing' && typeof progress.percent === 'number';
+
       // Fade everything toward black
       ctx.fillStyle = 'rgba(0, 0, 0, 0.08)';
       ctx.fillRect(0, 0, width, height);
 
-      // Draw bars — brightest near the scan line, fading away behind it
-      for (let i = 0; i < barCount; i++) {
-        const bx = i * barWidth;
-        const dist = scanX - (bx + barWidth / 2);
-        // Bars light up as the scan passes over them, then fade
-        let intensity;
-        if (dist < 0) {
-          // Ahead of scan — dim anticipation glow
-          intensity = Math.max(0, 1 - Math.abs(dist) / 40) * 0.15;
-        } else if (dist < 60) {
-          // Just passed — bright
-          intensity = 1 - dist / 60;
-        } else {
-          intensity = 0;
-        }
+      if (hasProgress) {
+        // Progress-based visualization: scan line tracks actual percent
+        const progressX = (progress.percent / 100) * width;
 
-        if (intensity > 0.01) {
-          const h = barHeights[i] * mid * 0.85 * intensity;
-          const alpha = intensity * 0.6;
-          ctx.fillStyle = `rgba(255, 153, 0, ${alpha})`;
-          ctx.fillRect(bx + 1, mid - h, barWidth - 2, h * 2);
-        }
-      }
-
-      // Draw scan line
-      const grad = ctx.createLinearGradient(scanX - 6, 0, scanX + 6, 0);
-      grad.addColorStop(0, 'rgba(255, 153, 0, 0)');
-      grad.addColorStop(0.5, 'rgba(255, 153, 0, 0.9)');
-      grad.addColorStop(1, 'rgba(255, 153, 0, 0)');
-      ctx.fillStyle = grad;
-      ctx.fillRect(scanX - 6, 0, 12, height);
-
-      // Advance scan, wrap around
-      scanX += scanSpeed;
-      if (scanX > width + 60) {
-        scanX = -20;
-        // Regenerate bar heights each sweep for variety
         for (let i = 0; i < barCount; i++) {
-          barHeights[i] = 0.15 + Math.random() * 0.85;
+          const bx = i * barWidth;
+          const barCenter = bx + barWidth / 2;
+          const h = barHeights[i] * mid * 0.85;
+
+          if (barCenter < progressX) {
+            // Processed — bright orange
+            ctx.fillStyle = 'rgba(255, 153, 0, 0.5)';
+            ctx.fillRect(bx + 1, mid - h, barWidth - 2, h * 2);
+          } else {
+            // Pending — dim blue
+            ctx.fillStyle = 'rgba(153, 153, 255, 0.15)';
+            ctx.fillRect(bx + 1, mid - h, barWidth - 2, h * 2);
+          }
+        }
+
+        // Draw progress scan line
+        const grad = ctx.createLinearGradient(progressX - 6, 0, progressX + 6, 0);
+        grad.addColorStop(0, 'rgba(255, 153, 0, 0)');
+        grad.addColorStop(0.5, 'rgba(255, 153, 0, 0.9)');
+        grad.addColorStop(1, 'rgba(255, 153, 0, 0)');
+        ctx.fillStyle = grad;
+        ctx.fillRect(progressX - 6, 0, 12, height);
+
+        // Draw percentage text (LCARS-style)
+        ctx.fillStyle = '#FF9900';
+        ctx.font = '14px Antonio, sans-serif';
+        ctx.textAlign = 'right';
+        ctx.fillText(`${progress.percent}%`, width - 8, 18);
+        ctx.textAlign = 'left';
+      } else {
+        // Free-sweep animation (diarizing or voice note transcription)
+        for (let i = 0; i < barCount; i++) {
+          const bx = i * barWidth;
+          const dist = scanX - (bx + barWidth / 2);
+          // Bars light up as the scan passes over them, then fade
+          let intensity;
+          if (dist < 0) {
+            // Ahead of scan — dim anticipation glow
+            intensity = Math.max(0, 1 - Math.abs(dist) / 40) * 0.15;
+          } else if (dist < 60) {
+            // Just passed — bright
+            intensity = 1 - dist / 60;
+          } else {
+            intensity = 0;
+          }
+
+          if (intensity > 0.01) {
+            const h = barHeights[i] * mid * 0.85 * intensity;
+            const alpha = intensity * 0.6;
+            ctx.fillStyle = `rgba(255, 153, 0, ${alpha})`;
+            ctx.fillRect(bx + 1, mid - h, barWidth - 2, h * 2);
+          }
+        }
+
+        // Draw scan line
+        const grad = ctx.createLinearGradient(scanX - 6, 0, scanX + 6, 0);
+        grad.addColorStop(0, 'rgba(255, 153, 0, 0)');
+        grad.addColorStop(0.5, 'rgba(255, 153, 0, 0.9)');
+        grad.addColorStop(1, 'rgba(255, 153, 0, 0)');
+        ctx.fillStyle = grad;
+        ctx.fillRect(scanX - 6, 0, 12, height);
+
+        // Advance scan, wrap around
+        scanX += scanSpeed;
+        if (scanX > width + 60) {
+          scanX = -20;
+          // Regenerate bar heights each sweep for variety
+          for (let i = 0; i < barCount; i++) {
+            barHeights[i] = 0.15 + Math.random() * 0.85;
+          }
         }
       }
     };
@@ -855,7 +921,14 @@ class LCARSVoiceInterface {
       let actionBtn = '';
       const isTranscribing = this.transcribingMeetings.has(entry.id);
       if (isTranscribing) {
-        actionBtn = '<button class="meeting-action-btn processing" disabled>PROCESSING...</button>';
+        const progress = this.meetingTranscriptionProgress;
+        let label = 'PROCESSING...';
+        if (progress.stage === 'transcribing' && typeof progress.percent === 'number') {
+          label = `TRANSCRIBING ${progress.percent}%`;
+        } else if (progress.stage === 'diarizing') {
+          label = 'DIARIZING...';
+        }
+        actionBtn = `<button class="meeting-action-btn processing" disabled>${label}</button>`;
       } else if (entry.transcript) {
         actionBtn = '<button class="meeting-action-btn copy-transcript-btn">COPY</button>';
       } else {
@@ -896,6 +969,9 @@ class LCARSVoiceInterface {
       this.flashStatus('ERROR: ' + e);
     } finally {
       this.transcribingMeetings.delete(id);
+      this.meetingTranscriptionProgress = { stage: null, percent: 0 };
+      this.stopTranscribingAnimation();
+      this.startIdleWaveform();
       this.renderMeetingHistory();
     }
   }
