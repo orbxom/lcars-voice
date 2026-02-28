@@ -1,5 +1,3 @@
-#![allow(dead_code)]
-
 //! Meeting transcription pipeline — pure Rust port of the Python meeting-transcripts tool.
 //!
 //! Provides WAV decoding, hallucination filtering, speaker diarization assignment,
@@ -262,39 +260,13 @@ pub fn transcribe_meeting_audio(
     model_name: &str,
     app: Option<tauri::AppHandle>,
 ) -> Result<Vec<WhisperSegment>, String> {
-    use whisper_rs::{FullParams, SamplingStrategy};
-
     eprintln!(
         "[LCARS] meeting_transcription: model={}, samples={}",
         model_name,
         audio_data.len()
     );
 
-    let mut params = FullParams::new(SamplingStrategy::Greedy { best_of: 1 });
-    params.set_language(Some("en"));
-    params.set_print_special(false);
-    params.set_print_progress(false);
-    params.set_print_realtime(false);
-    params.set_print_timestamps(false);
-
-    // Anti-hallucination parameters (higher max_tokens for longer meeting segments)
-    params.set_suppress_nst(true);
-    params.set_no_context(true);
-    params.set_entropy_thold(2.0);
-    params.set_logprob_thold(-0.5);
-    params.set_temperature_inc(0.4);
-    params.set_max_tokens(500);
-
-    // Register progress callback to emit real-time transcription progress
-    if let Some(app_cb) = app {
-        use tauri::Emitter;
-        params.set_progress_callback_safe(move |percent: i32| {
-            let _ = app_cb.emit(
-                "meeting-transcription-progress",
-                serde_json::json!({"stage": "transcribing", "percent": percent}),
-            );
-        });
-    }
+    let params = crate::transcription::build_whisper_params(500, app);
 
     let mut state = ctx
         .create_state()
@@ -367,16 +339,6 @@ pub fn run_diarization(wav_bytes: &[u8]) -> Option<Vec<SpeakerTurn>> {
         format!("{}/voice-to-text-env/bin/python", home)
     });
 
-    // Check if Python exists
-    if !std::path::Path::new(&python).exists() {
-        eprintln!(
-            "[LCARS] run_diarization: Python not found at '{}', skipping diarization",
-            python
-        );
-        let _ = std::fs::remove_file(&temp_path);
-        return None;
-    }
-
     // Run the diarization script
     let mut cmd = Command::new(&python);
     cmd.arg("-c").arg(DIARIZE_SCRIPT).arg(&temp_path);
@@ -389,7 +351,10 @@ pub fn run_diarization(wav_bytes: &[u8]) -> Option<Vec<SpeakerTurn>> {
     let output = match cmd.output() {
         Ok(o) => o,
         Err(e) => {
-            eprintln!("[LCARS] run_diarization: failed to run Python: {}", e);
+            eprintln!(
+                "[LCARS] run_diarization: failed to run Python (not found at '{}' or execution error): {}",
+                python, e
+            );
             let _ = std::fs::remove_file(&temp_path);
             return None;
         }

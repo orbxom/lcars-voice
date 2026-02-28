@@ -1,5 +1,27 @@
 // LCARS Voice Interface - Tauri Integration
 
+const UI_STATE = Object.freeze({
+  RECORDING: 'recording',
+  TRANSCRIBING: 'transcribing',
+  READY: 'ready',
+});
+
+function escapeHtml(str) {
+  return str
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;');
+}
+
+function formatDuration(totalSeconds) {
+  const total = Math.floor(totalSeconds);
+  const h = Math.floor(total / 3600);
+  const m = Math.floor((total % 3600) / 60);
+  const s = total % 60;
+  return `${String(h).padStart(2,'0')}:${String(m).padStart(2,'0')}:${String(s).padStart(2,'0')}`;
+}
+
 class LCARSVoiceInterface {
   constructor() {
     this.isRecording = false;
@@ -41,8 +63,6 @@ class LCARSVoiceInterface {
     this.meetings = [];
     this.transcribingMeetings = new Set();
     this.currentModel = 'base';
-    this.dropdownOpen = false;
-
     this.init();
   }
 
@@ -221,7 +241,7 @@ class LCARSVoiceInterface {
       console.log('[LCARS] event: Received recording-started');
       this.isRecording = true;
       console.log('[LCARS] state: isRecording = true');
-      this.updateUI('recording');
+      this.updateUI(UI_STATE.RECORDING);
       this.startWaveformAnimation();
     });
 
@@ -232,7 +252,7 @@ class LCARSVoiceInterface {
       console.log('[LCARS] state: isRecording = false, isTranscribing = true');
       this.stopWaveformAnimation();
       this.meetingTranscriptionProgress = { stage: 'transcribing', percent: 0 };
-      this.updateUI('transcribing');
+      this.updateUI(UI_STATE.TRANSCRIBING);
       this.startTranscribingAnimation();
     });
 
@@ -255,7 +275,7 @@ class LCARSVoiceInterface {
       await this.loadHistory();
       this.renderHistory();
       this.stopTranscribingAnimation();
-      this.updateUI('ready');
+      this.updateUI(UI_STATE.READY);
       this.startIdleWaveform();
       this.flashStatus('COPIED TO CLIPBOARD');
     });
@@ -269,7 +289,7 @@ class LCARSVoiceInterface {
       console.log('[LCARS] state: isRecording = false, isTranscribing = false');
       this.stopWaveformAnimation();
       this.stopTranscribingAnimation();
-      this.updateUI('ready');
+      this.updateUI(UI_STATE.READY);
       this.startIdleWaveform();
       this.flashStatus('ERROR: ' + event.payload);
     });
@@ -280,7 +300,7 @@ class LCARSVoiceInterface {
       this.stopElapsedTimer();
       this.stopWaveformAnimation();
       this.stopTranscribingAnimation();
-      this.updateUI('ready');
+      this.updateUI(UI_STATE.READY);
       this.startIdleWaveform();
       await this.loadMeetingHistory();
       this.renderMeetingHistory();
@@ -305,7 +325,7 @@ class LCARSVoiceInterface {
   }
 
   updateTranscriptionProgress() {
-    const { stage } = this.meetingTranscriptionProgress;
+    const { stage, percent } = this.meetingTranscriptionProgress;
     // Start transcribing animation if not already running
     if (stage && !this.transcribeAnimationId) {
       if (this.idleAnimationId) {
@@ -314,8 +334,17 @@ class LCARSVoiceInterface {
       }
       this.startTranscribingAnimation();
     }
-    // Re-render meeting list to update button text
-    this.renderMeetingHistory();
+    // Targeted update: only update the processing button text
+    const btn = this.elements.meetingList.querySelector('.meeting-action-btn.processing');
+    if (btn) {
+      if (stage === 'transcribing' && typeof percent === 'number') {
+        btn.textContent = `TRANSCRIBING ${percent}%`;
+      } else if (stage === 'diarizing') {
+        btn.textContent = 'DIARIZING...';
+      } else {
+        btn.textContent = 'PROCESSING...';
+      }
+    }
   }
 
   updateStardate() {
@@ -378,7 +407,7 @@ class LCARSVoiceInterface {
       this.currentMode = mode;
       this.updateModeDisplay();
       this.closeModeDropdown();
-      this.updateUI('ready');
+      this.updateUI(UI_STATE.READY);
       this.flashStatus('MODE: ' + (mode === 'Meeting' ? 'MEETING' : 'VOICE NOTE'));
     } catch (e) {
       console.error('[LCARS] app: Failed to set recording mode:', e);
@@ -392,12 +421,7 @@ class LCARSVoiceInterface {
       if (!this.isRecording) return;
       try {
         const elapsed = await window.__TAURI__.core.invoke('get_elapsed_time');
-        const total = Math.floor(elapsed);
-        const h = Math.floor(total / 3600);
-        const m = Math.floor((total % 3600) / 60);
-        const s = total % 60;
-        const timeStr = `${String(h).padStart(2,'0')}:${String(m).padStart(2,'0')}:${String(s).padStart(2,'0')}`;
-        this.elements.statusText.textContent = timeStr;
+        this.elements.statusText.textContent = formatDuration(elapsed);
       } catch (e) {}
     }, 1000);
   }
@@ -445,7 +469,7 @@ class LCARSVoiceInterface {
     this.elements.recordBtn.classList.remove('recording');
 
     switch (state) {
-      case 'recording':
+      case UI_STATE.RECORDING:
         this.elements.frame.classList.add('recording');
         this.elements.statusIndicator.classList.add('recording');
         this.elements.recordBtn.classList.add('recording');
@@ -459,14 +483,14 @@ class LCARSVoiceInterface {
         }
         break;
 
-      case 'transcribing':
+      case UI_STATE.TRANSCRIBING:
         this.elements.frame.classList.add('transcribing');
         this.elements.statusIndicator.classList.add('transcribing');
         this.elements.statusText.textContent = 'TRANSCRIBING';
         this.elements.recordBtn.querySelector('.button-text').textContent = 'PROCESSING';
         break;
 
-      case 'ready':
+      case UI_STATE.READY:
       default:
         this.elements.statusText.textContent = 'READY';
         if (this.currentMode === 'Meeting') {
@@ -484,12 +508,17 @@ class LCARSVoiceInterface {
   }
 
   flashStatus(message) {
-    const originalText = this.elements.statusText.textContent;
     this.elements.statusText.textContent = message;
     this.elements.statusText.style.color = message.startsWith('ERROR') ? 'var(--lcars-red)' : 'var(--lcars-green)';
 
     setTimeout(() => {
-      this.elements.statusText.textContent = 'READY';
+      if (this.isRecording) {
+        this.elements.statusText.textContent = 'RECORDING';
+      } else if (this.isTranscribing) {
+        this.elements.statusText.textContent = 'TRANSCRIBING';
+      } else {
+        this.elements.statusText.textContent = 'READY';
+      }
       this.elements.statusText.style.color = '';
     }, 2000);
   }
@@ -859,17 +888,8 @@ class LCARSVoiceInterface {
         ? entry.text.substring(0, 50) + '...'
         : entry.text;
 
-      // Escape HTML and quotes
-      const escapedText = entry.text
-        .replace(/&/g, '&amp;')
-        .replace(/</g, '&lt;')
-        .replace(/>/g, '&gt;')
-        .replace(/"/g, '&quot;');
-
-      const escapedTruncated = truncated
-        .replace(/&/g, '&amp;')
-        .replace(/</g, '&lt;')
-        .replace(/>/g, '&gt;');
+      const escapedText = escapeHtml(entry.text);
+      const escapedTruncated = escapeHtml(truncated);
 
       return `
         <div class="history-item" data-id="${entry.id}" data-text="${escapedText}">
@@ -906,18 +926,11 @@ class LCARSVoiceInterface {
         day: 'numeric',
       });
 
-      const totalSec = Math.floor(entry.duration_ms / 1000);
-      const h = Math.floor(totalSec / 3600);
-      const m = Math.floor((totalSec % 3600) / 60);
-      const s = totalSec % 60;
-      const duration = `${String(h).padStart(2,'0')}:${String(m).padStart(2,'0')}:${String(s).padStart(2,'0')}`;
+      const duration = formatDuration(entry.duration_ms / 1000);
 
       const sizeMB = (entry.size_bytes / (1024 * 1024)).toFixed(1);
 
-      const escapedFilename = entry.filename
-        .replace(/&/g, '&amp;')
-        .replace(/</g, '&lt;')
-        .replace(/>/g, '&gt;');
+      const escapedFilename = escapeHtml(entry.filename);
 
       // Determine button state
       let actionBtn = '';
@@ -1050,13 +1063,12 @@ class LCARSVoiceInterface {
   }
 
   toggleDropdown() {
-    this.dropdownOpen = !this.dropdownOpen;
-    this.elements.modelDropdown.classList.toggle('open', this.dropdownOpen);
-    this.elements.modelBtn.classList.toggle('active', this.dropdownOpen);
+    const isOpen = this.elements.modelDropdown.classList.contains('open');
+    this.elements.modelDropdown.classList.toggle('open', !isOpen);
+    this.elements.modelBtn.classList.toggle('active', !isOpen);
   }
 
   closeDropdown() {
-    this.dropdownOpen = false;
     this.elements.modelDropdown.classList.remove('open');
     this.elements.modelBtn.classList.remove('active');
   }
@@ -1087,5 +1099,5 @@ document.addEventListener('DOMContentLoaded', () => {
 
 // Export for testing
 if (typeof module !== 'undefined' && module.exports) {
-  module.exports = { LCARSVoiceInterface };
+  module.exports = { LCARSVoiceInterface, escapeHtml, formatDuration, UI_STATE };
 }

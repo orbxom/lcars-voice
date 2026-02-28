@@ -38,6 +38,18 @@ pub enum RecordingMode {
     Meeting,
 }
 
+impl std::str::FromStr for RecordingMode {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "VoiceNote" => Ok(RecordingMode::VoiceNote),
+            "Meeting" => Ok(RecordingMode::Meeting),
+            _ => Err(format!("Invalid mode: {}", s)),
+        }
+    }
+}
+
 const VALID_WHISPER_MODELS: &[&str] = &["base", "small", "medium", "large"];
 
 fn is_valid_whisper_model(model: &str) -> bool {
@@ -64,10 +76,9 @@ fn resolve_whisper_model(store_value: Option<String>, env_value: Option<String>)
 }
 
 fn resolve_recording_mode(store_value: Option<&str>) -> RecordingMode {
-    match store_value {
-        Some("Meeting") => RecordingMode::Meeting,
-        _ => RecordingMode::VoiceNote,
-    }
+    store_value
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(RecordingMode::VoiceNote)
 }
 
 struct AppState {
@@ -465,18 +476,11 @@ fn set_recording_mode(app: tauri::AppHandle, mode: String) -> Result<(), String>
     if state.is_recording.load(Ordering::SeqCst) {
         return Err("Cannot change mode while recording".to_string());
     }
-    match mode.as_str() {
-        "VoiceNote" | "Meeting" => {}
-        _ => return Err(format!("Invalid mode: {}", mode)),
-    }
+    let parsed: RecordingMode = mode.parse()?;
     let store = app.store("settings.json").map_err(|e| e.to_string())?;
     store.set("recording_mode", serde_json::json!(mode));
     store.save().map_err(|e| e.to_string())?;
-    *state.recording_mode.lock().map_err(|e| e.to_string())? = if mode == "Meeting" {
-        RecordingMode::Meeting
-    } else {
-        RecordingMode::VoiceNote
-    };
+    *state.recording_mode.lock().map_err(|e| e.to_string())? = parsed;
     Ok(())
 }
 
@@ -911,6 +915,23 @@ mod tests {
             resolve_recording_mode(Some("Invalid")),
             RecordingMode::VoiceNote
         );
+    }
+
+    #[test]
+    fn test_recording_mode_from_str_voice_note() {
+        assert_eq!("VoiceNote".parse::<RecordingMode>().unwrap(), RecordingMode::VoiceNote);
+    }
+
+    #[test]
+    fn test_recording_mode_from_str_meeting() {
+        assert_eq!("Meeting".parse::<RecordingMode>().unwrap(), RecordingMode::Meeting);
+    }
+
+    #[test]
+    fn test_recording_mode_from_str_invalid() {
+        assert!("Invalid".parse::<RecordingMode>().is_err());
+        assert!("".parse::<RecordingMode>().is_err());
+        assert!("voicenote".parse::<RecordingMode>().is_err());
     }
 
     #[test]

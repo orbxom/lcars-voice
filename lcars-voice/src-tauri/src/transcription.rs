@@ -8,6 +8,39 @@ pub struct TranscriptionResult {
     pub language: String,
 }
 
+/// Build common Whisper FullParams with anti-hallucination settings.
+///
+/// `max_tokens` controls the maximum tokens per segment (100 for voice notes, 500 for meetings).
+/// If `app` is provided, registers a progress callback that emits `meeting-transcription-progress`.
+pub fn build_whisper_params(max_tokens: i32, app: Option<tauri::AppHandle>) -> FullParams<'static, 'static> {
+    let mut params = FullParams::new(SamplingStrategy::Greedy { best_of: 1 });
+    params.set_language(Some("en"));
+    params.set_print_special(false);
+    params.set_print_progress(false);
+    params.set_print_realtime(false);
+    params.set_print_timestamps(false);
+
+    // Anti-hallucination parameters
+    params.set_suppress_nst(true);
+    params.set_no_context(true);
+    params.set_entropy_thold(2.0);
+    params.set_logprob_thold(-0.5);
+    params.set_temperature_inc(0.4);
+    params.set_max_tokens(max_tokens);
+
+    if let Some(app_cb) = app {
+        use tauri::Emitter;
+        params.set_progress_callback_safe(move |percent: i32| {
+            let _ = app_cb.emit(
+                "meeting-transcription-progress",
+                serde_json::json!({"stage": "transcribing", "percent": percent}),
+            );
+        });
+    }
+
+    params
+}
+
 /// Transcribes audio data using a pre-loaded WhisperContext.
 ///
 /// `audio_data` must be f32 PCM samples at 16kHz mono.
@@ -24,30 +57,7 @@ pub fn transcribe(
         audio_data.len()
     );
 
-    let mut params = FullParams::new(SamplingStrategy::Greedy { best_of: 1 });
-    params.set_language(Some("en"));
-    params.set_print_special(false);
-    params.set_print_progress(false);
-    params.set_print_realtime(false);
-    params.set_print_timestamps(false);
-
-    // Anti-hallucination parameters
-    params.set_suppress_nst(true);
-    params.set_no_context(true);
-    params.set_entropy_thold(2.0);
-    params.set_logprob_thold(-0.5);
-    params.set_temperature_inc(0.4);
-    params.set_max_tokens(100);
-
-    if let Some(app_cb) = app {
-        use tauri::Emitter;
-        params.set_progress_callback_safe(move |percent: i32| {
-            let _ = app_cb.emit(
-                "meeting-transcription-progress",
-                serde_json::json!({"stage": "transcribing", "percent": percent}),
-            );
-        });
-    }
+    let params = build_whisper_params(100, app);
 
     let mut state = ctx
         .create_state()

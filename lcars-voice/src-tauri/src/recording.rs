@@ -247,10 +247,7 @@ impl Recorder {
                     sample_counter += data.len();
                     if sample_counter >= 1600 {
                         sample_counter = 0;
-                        let sum_sq: f32 =
-                            data.iter().map(|&s| s * s).sum::<f32>() / data.len() as f32;
-                        let rms = sum_sq.sqrt();
-                        rms_level.store(rms.to_bits(), Ordering::SeqCst);
+                        rms_level.store(rms(data).to_bits(), Ordering::SeqCst);
                     }
                 },
                 move |err| {
@@ -349,9 +346,7 @@ impl Recorder {
                 .iter()
                 .cloned()
                 .fold(f32::NEG_INFINITY, f32::max);
-            let mon_rms = (monitor_samples.iter().map(|s| s * s).sum::<f32>()
-                / monitor_samples.len() as f32)
-                .sqrt();
+            let mon_rms = rms(&monitor_samples);
             eprintln!(
                 "[LCARS] recording: monitor raw: count={}, min={:.6}, max={:.6}, rms={:.6}",
                 monitor_samples.len(),
@@ -360,8 +355,7 @@ impl Recorder {
                 mon_rms
             );
             // Mic stats too
-            let mic_rms =
-                (mic_audio.iter().map(|s| s * s).sum::<f32>() / mic_audio.len() as f32).sqrt();
+            let mic_rms = rms(&mic_audio);
             eprintln!(
                 "[LCARS] recording: mic resampled: count={}, rms={:.6}",
                 mic_audio.len(),
@@ -371,9 +365,7 @@ impl Recorder {
             let monitor_mono = downmix_to_mono(&monitor_samples, self.monitor_channels);
             let monitor_audio = resample_to_16khz(&monitor_mono, self.monitor_sample_rate)?;
 
-            let mon_res_rms = (monitor_audio.iter().map(|s| s * s).sum::<f32>()
-                / monitor_audio.len() as f32)
-                .sqrt();
+            let mon_res_rms = rms(&monitor_audio);
             eprintln!(
                 "[LCARS] recording: monitor resampled: count={}, rms={:.6}",
                 monitor_audio.len(),
@@ -437,6 +429,16 @@ impl Recorder {
             .map(|start| start.elapsed().as_secs_f64())
             .unwrap_or(0.0)
     }
+}
+
+/// Compute the root mean square of a slice of f32 samples.
+///
+/// Returns 0.0 for an empty slice.
+pub fn rms(samples: &[f32]) -> f32 {
+    if samples.is_empty() {
+        return 0.0;
+    }
+    (samples.iter().map(|s| s * s).sum::<f32>() / samples.len() as f32).sqrt()
 }
 
 /// Convert raw little-endian bytes to f32 samples.
@@ -784,5 +786,36 @@ mod tests {
     fn test_bytes_to_f32_samples_too_short() {
         let samples = bytes_to_f32_samples(&[0, 1, 2]);
         assert!(samples.is_empty());
+    }
+
+    // --- rms() tests ---
+
+    #[test]
+    fn test_rms_empty_slice_returns_zero() {
+        assert_eq!(rms(&[]), 0.0);
+    }
+
+    #[test]
+    fn test_rms_single_value() {
+        assert!((rms(&[0.5]) - 0.5).abs() < 1e-6);
+    }
+
+    #[test]
+    fn test_rms_known_values() {
+        // RMS of [3.0, 4.0] = sqrt((9+16)/2) = sqrt(12.5) = 3.5355...
+        let result = rms(&[3.0, 4.0]);
+        let expected = (12.5f32).sqrt();
+        assert!((result - expected).abs() < 1e-6);
+    }
+
+    #[test]
+    fn test_rms_silence() {
+        assert_eq!(rms(&[0.0, 0.0, 0.0]), 0.0);
+    }
+
+    #[test]
+    fn test_rms_uniform_values() {
+        // RMS of all-same values equals the absolute value
+        assert!((rms(&[0.7, 0.7, 0.7]) - 0.7).abs() < 1e-6);
     }
 }
