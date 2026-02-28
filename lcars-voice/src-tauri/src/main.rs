@@ -103,6 +103,15 @@ fn ensure_whisper_context(
         if !model_manager::is_model_downloaded(model_name) {
             model_manager::download_model(app, model_name)?;
         }
+
+        // Non-fatal: download VAD model if not present
+        if !model_manager::is_vad_model_downloaded() {
+            eprintln!("[LCARS] VAD model not found, downloading...");
+            if let Err(e) = model_manager::download_vad_model(app) {
+                eprintln!("[LCARS] WARNING: Failed to download VAD model: {}", e);
+            }
+        }
+
         let path = model_manager::model_path(model_name);
         let path_str = path.to_str().ok_or("Invalid model path")?;
         eprintln!("[LCARS] Loading whisper model: {}", model_name);

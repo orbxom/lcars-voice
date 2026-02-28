@@ -5,6 +5,9 @@ use std::io::Write;
 use std::path::PathBuf;
 use tauri::Emitter;
 
+const VAD_MODEL_URL: &str = "https://huggingface.co/ggml-org/whisper-vad/resolve/main/ggml-silero-v6.2.0.bin";
+const VAD_MODEL_FILENAME: &str = "ggml-silero-v6.2.0.bin";
+
 const MODEL_URLS: &[(&str, &str)] = &[
     (
         "base",
@@ -50,28 +53,64 @@ pub fn get_model_url(model_name: &str) -> Option<&'static str> {
         .map(|(_, url)| *url)
 }
 
+/// Returns the expected path for the VAD model.
+pub fn vad_model_path() -> PathBuf {
+    models_dir().join(VAD_MODEL_FILENAME)
+}
+
+/// Returns the download URL for the VAD model.
+pub fn vad_model_url() -> &'static str {
+    VAD_MODEL_URL
+}
+
+/// Returns true if the VAD model file exists on disk.
+pub fn is_vad_model_downloaded() -> bool {
+    vad_model_path().exists()
+}
+
+/// Returns the VAD model path as a String if the model is downloaded, None otherwise.
+pub fn vad_model_path_if_available() -> Option<String> {
+    let path = vad_model_path();
+    if path.exists() {
+        path.to_str().map(|s| s.to_string())
+    } else {
+        None
+    }
+}
+
+/// Downloads the VAD model with progress events, returns path on success.
+pub fn download_vad_model(app: &tauri::AppHandle) -> Result<PathBuf, String> {
+    download_file(app, VAD_MODEL_URL, &vad_model_path(), "vad")
+}
+
 /// Downloads a model with progress events, returns path on success.
 ///
 /// Emits `model-download-progress` events with `{ model, percent, bytes_downloaded, total_bytes }`.
 /// Downloads to a `.downloading` temp file first, then performs an atomic rename.
 pub fn download_model(app: &tauri::AppHandle, model_name: &str) -> Result<PathBuf, String> {
     let url = get_model_url(model_name).ok_or_else(|| format!("Unknown model: {}", model_name))?;
+    download_file(app, url, &model_path(model_name), model_name)
+}
 
-    let dest = model_path(model_name);
+/// Internal: download a file from `url` to `dest`, emitting progress events with `model_label`.
+fn download_file(
+    app: &tauri::AppHandle,
+    url: &str,
+    dest: &std::path::Path,
+    model_label: &str,
+) -> Result<PathBuf, String> {
     let dir = models_dir();
 
     eprintln!(
-        "[LCARS] model_manager: downloading model '{}' to {:?}",
-        model_name, dest
+        "[LCARS] model_manager: downloading '{}' to {:?}",
+        model_label, dest
     );
 
-    // Ensure the models directory exists
     fs::create_dir_all(&dir)
         .map_err(|e| format!("Failed to create models directory {:?}: {}", dir, e))?;
 
     let downloading_path = dest.with_extension("downloading");
 
-    // Start the download
     let response = reqwest::blocking::Client::new()
         .get(url)
         .send()
@@ -112,7 +151,7 @@ pub fn download_model(app: &tauri::AppHandle, model_name: &str) -> Result<PathBu
         let _ = app.emit(
             "model-download-progress",
             serde_json::json!({
-                "model": model_name,
+                "model": model_label,
                 "percent": percent,
                 "bytes_downloaded": bytes_downloaded,
                 "total_bytes": total_bytes,
@@ -124,7 +163,6 @@ pub fn download_model(app: &tauri::AppHandle, model_name: &str) -> Result<PathBu
         .map_err(|e| format!("Failed to flush temp file: {}", e))?;
     drop(file);
 
-    // Atomic rename from .downloading to final path
     fs::rename(&downloading_path, &dest)
         .map_err(|e| format!("Failed to rename temp file to {:?}: {}", dest, e))?;
 
@@ -133,7 +171,7 @@ pub fn download_model(app: &tauri::AppHandle, model_name: &str) -> Result<PathBu
         bytes_downloaded, dest
     );
 
-    Ok(dest)
+    Ok(dest.to_path_buf())
 }
 
 #[cfg(test)]
@@ -202,6 +240,32 @@ mod tests {
         assert!(
             get_model_url("").is_none(),
             "empty string should not have a URL"
+        );
+    }
+
+    #[test]
+    fn test_vad_model_path() {
+        let path = vad_model_path();
+        let path_str = path.to_string_lossy();
+        assert!(
+            path_str.ends_with("ggml-silero-v6.2.0.bin"),
+            "vad_model_path should end with 'ggml-silero-v6.2.0.bin', got: {}",
+            path_str
+        );
+    }
+
+    #[test]
+    fn test_vad_model_url() {
+        let url = vad_model_url();
+        assert!(
+            url.contains("huggingface.co"),
+            "VAD model URL should contain 'huggingface.co', got: {}",
+            url
+        );
+        assert!(
+            url.contains("silero"),
+            "VAD model URL should contain 'silero', got: {}",
+            url
         );
     }
 

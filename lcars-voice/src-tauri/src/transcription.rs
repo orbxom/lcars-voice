@@ -12,6 +12,7 @@ pub struct TranscriptionResult {
 ///
 /// `max_tokens` controls the maximum tokens per segment (100 for voice notes, 500 for meetings).
 /// If `app` is provided, registers a progress callback that emits `meeting-transcription-progress`.
+/// Automatically enables VAD (Voice Activity Detection) if the VAD model is downloaded.
 pub fn build_whisper_params(max_tokens: i32, app: Option<tauri::AppHandle>) -> FullParams<'static, 'static> {
     let mut params = FullParams::new(SamplingStrategy::Greedy { best_of: 1 });
     params.set_language(Some("en"));
@@ -27,6 +28,12 @@ pub fn build_whisper_params(max_tokens: i32, app: Option<tauri::AppHandle>) -> F
     params.set_logprob_thold(-0.5);
     params.set_temperature_inc(0.4);
     params.set_max_tokens(max_tokens);
+
+    // Enable VAD if the model is available (path must be set before enabling)
+    if let Some(vad_path) = crate::model_manager::vad_model_path_if_available() {
+        params.set_vad_model_path(Some(&vad_path));
+        params.enable_vad(true);
+    }
 
     if let Some(app_cb) = app {
         use tauri::Emitter;
@@ -112,7 +119,9 @@ pub fn detect_and_remove_repetitions(text: &str) -> String {
     }
 
     // Try n-gram sizes from largest to smallest (catch phrase loops first)
-    for ngram_size in (1..=8).rev() {
+    // Upper bound: need at least 3 occurrences (1 original + max_repeats=2), capped at 50
+    let max_ngram = (words.len() / 3).min(50);
+    for ngram_size in (1..=max_ngram).rev() {
         let max_repeats = if ngram_size <= 2 { 4 } else { 2 };
 
         if words.len() < ngram_size * (max_repeats + 1) {
@@ -230,6 +239,114 @@ mod tests {
         );
         assert!(result.contains("Hello"));
         assert!(result.contains("world"));
+    }
+
+    #[test]
+    fn test_build_whisper_params_does_not_panic() {
+        // Should not panic regardless of VAD model availability
+        let _params = build_whisper_params(100, None);
+        let _params = build_whisper_params(500, None);
+    }
+
+    #[test]
+    fn test_repetition_long_phrase_39_words() {
+        // Real-world reproduction: 39-word phrase repeated 13 times
+        let phrase = "so I think the key takeaway from this meeting is that we need to focus on building a better product experience for our users and making sure that the onboarding flow is as smooth as possible for everyone involved";
+        let word_count = phrase.split_whitespace().count();
+        assert_eq!(word_count, 39);
+
+        let repeated = std::iter::repeat(phrase).take(13).collect::<Vec<_>>().join(" ");
+        let result = detect_and_remove_repetitions(&repeated);
+        let result_count = result.matches("key takeaway").count();
+        assert!(
+            result_count <= 2,
+            "Expected at most 2 occurrences of the 39-word phrase, got {}: '{}'",
+            result_count,
+            &result[..result.len().min(200)]
+        );
+    }
+
+    #[test]
+    fn test_repetition_medium_phrase_15_words() {
+        // 15-word phrase repeated 5 times (above old 8-word ceiling)
+        let phrase = "the quick brown fox jumped over the lazy dog and then sat down quietly";
+        let word_count = phrase.split_whitespace().count();
+        assert_eq!(word_count, 14);
+
+        let repeated = std::iter::repeat(phrase).take(5).collect::<Vec<_>>().join(" ");
+        let result = detect_and_remove_repetitions(&repeated);
+        let count = result.matches("quick brown fox").count();
+        assert!(
+            count <= 2,
+            "Expected at most 2 occurrences of the 15-word phrase, got {}: '{}'",
+            count,
+            result
+        );
+    }
+
+    #[test]
+    fn test_repetition_long_phrase_with_surrounding_text() {
+        // Repeats sandwiched between legitimate content
+        let prefix = "This is a perfectly valid introduction to the recording.";
+        let phrase = "and I think we should consider the implications of this decision for our team";
+        let suffix = "That concludes the main points of our discussion today.";
+
+        let middle = std::iter::repeat(phrase).take(8).collect::<Vec<_>>().join(" ");
+        let input = format!("{} {} {}", prefix, middle, suffix);
+        let result = detect_and_remove_repetitions(&input);
+
+        assert!(
+            result.contains("perfectly valid introduction"),
+            "Prefix should be preserved: '{}'",
+            &result[..result.len().min(200)]
+        );
+        assert!(
+            result.contains("concludes the main points"),
+            "Suffix should be preserved: '{}'",
+            result
+        );
+        let count = result.matches("consider the implications").count();
+        assert!(
+            count <= 2,
+            "Expected at most 2 occurrences of the repeated phrase, got {}",
+            count
+        );
+    }
+
+    #[test]
+    fn test_repetition_exactly_9_word_phrase() {
+        // Smallest n-gram that failed with the old 8-word ceiling
+        let phrase = "I really think this is a very important point";
+        let word_count = phrase.split_whitespace().count();
+        assert_eq!(word_count, 9);
+
+        let repeated = std::iter::repeat(phrase).take(5).collect::<Vec<_>>().join(" ");
+        let result = detect_and_remove_repetitions(&repeated);
+        let count = result.matches("very important point").count();
+        assert!(
+            count <= 2,
+            "Expected at most 2 occurrences of the 9-word phrase, got {}: '{}'",
+            count,
+            result
+        );
+    }
+
+    #[test]
+    fn test_repetition_performance_large_clean_text() {
+        // 2000 unique words; should be unchanged and complete quickly
+        let words: Vec<String> = (0..2000).map(|i| format!("word{}", i)).collect();
+        let input = words.join(" ");
+
+        let start = std::time::Instant::now();
+        let result = detect_and_remove_repetitions(&input);
+        let elapsed = start.elapsed();
+
+        assert_eq!(result, input, "Clean text should be unchanged");
+        assert!(
+            elapsed.as_secs() < 1,
+            "Should complete in under 1 second, took {:?}",
+            elapsed
+        );
     }
 
     #[test]
