@@ -314,6 +314,43 @@ fn handle_stop_and_transcribe(app: &tauri::AppHandle) {
                 let _ = app_clone.emit("meeting-saved", filename);
             }
         } else {
+            // Step 2: Encode audio to WAV for persistence
+            let wav_bytes = match meeting::encode_wav(&recording.audio_data) {
+                Ok(bytes) => bytes,
+                Err(e) => {
+                    let _ = app_clone.emit(
+                        "transcription-error",
+                        format!("WAV encode failed: {}", e),
+                    );
+                    return;
+                }
+            };
+
+            // Step 3: Save audio to DB FIRST (preserves audio even if transcription fails)
+            let record_id = match state.db.lock() {
+                Ok(db) => match db.add_voice_note(&wav_bytes, recording.duration_ms, &model) {
+                    Ok(id) => {
+                        eprintln!("[LCARS] Voice note audio saved to DB, id={}", id);
+                        id
+                    }
+                    Err(e) => {
+                        eprintln!("[LCARS] Failed to save voice note audio: {}", e);
+                        let _ = app_clone.emit(
+                            "transcription-error",
+                            format!("Failed to save audio: {}", e),
+                        );
+                        return;
+                    }
+                },
+                Err(e) => {
+                    let _ = app_clone.emit(
+                        "transcription-error",
+                        format!("DB lock error: {}", e),
+                    );
+                    return;
+                }
+            };
+
             let _ = app_clone.emit("transcribing", ());
             send_notification(
                 &app_clone,
@@ -321,14 +358,14 @@ fn handle_stop_and_transcribe(app: &tauri::AppHandle) {
                 "Recording stopped, transcribing...",
             );
 
-            // Step 2: Ensure whisper model is loaded (may trigger download)
+            // Step 4: Ensure whisper model is loaded (may trigger download)
             if let Err(e) = ensure_whisper_context(&app_clone, &state, &model) {
                 send_notification(&app_clone, "LCARS Voice", &format!("Model error: {}", e));
                 let _ = app_clone.emit("transcription-error", e);
                 return;
             }
 
-            // Step 3: Transcribe
+            // Step 5: Transcribe
             let ctx_guard = match state.whisper_ctx.lock() {
                 Ok(g) => g,
                 Err(e) => {
@@ -350,18 +387,20 @@ fn handle_stop_and_transcribe(app: &tauri::AppHandle) {
 
             match transcription::transcribe(ctx, &recording.audio_data, &model, Some(app_clone.clone())) {
                 Ok(result) => {
-                    // Step 4: Save to DB with real duration
+                    // Step 6: Update DB record with transcribed text
                     if let Ok(db) = state.db.lock() {
-                        let _ =
-                            db.add_transcription(&result.text, Some(recording.duration_ms), &model);
+                        if let Err(e) = db.update_transcription_text(record_id, &result.text) {
+                            eprintln!("[LCARS] Failed to update transcription text: {}", e);
+                        }
                     }
 
-                    // Step 5: Notify and emit
+                    // Step 7: Notify and emit
                     let preview = truncate_preview(&result.text, 50);
                     send_notification(&app_clone, "LCARS Voice", &preview);
                     let _ = app_clone.emit("transcription-complete", result.text);
                 }
                 Err(e) => {
+                    eprintln!("[LCARS] Transcription failed but audio preserved (id={})", record_id);
                     send_notification(&app_clone, "LCARS Voice", &format!("Error: {}", e));
                     let _ = app_clone.emit("transcription-error", e);
                 }

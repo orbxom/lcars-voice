@@ -65,6 +65,10 @@ impl Database {
         conn.execute_batch("ALTER TABLE meetings ADD COLUMN transcript TEXT;")
             .ok();
 
+        // Migration: add audio_data column to transcriptions for voice note audio persistence
+        conn.execute_batch("ALTER TABLE transcriptions ADD COLUMN audio_data BLOB;")
+            .ok();
+
         Ok(Self { conn })
     }
 
@@ -130,6 +134,30 @@ impl Database {
         })?;
 
         rows.collect()
+    }
+
+    pub fn add_voice_note(
+        &self,
+        audio_data: &[u8],
+        duration_ms: i64,
+        model: &str,
+    ) -> Result<i64> {
+        self.conn.execute(
+            "INSERT INTO transcriptions (text, audio_data, duration_ms, model) VALUES ('', ?1, ?2, ?3)",
+            params![audio_data, duration_ms, model],
+        )?;
+        Ok(self.conn.last_insert_rowid())
+    }
+
+    pub fn update_transcription_text(&self, id: i64, text: &str) -> Result<()> {
+        let rows = self.conn.execute(
+            "UPDATE transcriptions SET text = ?1 WHERE id = ?2",
+            params![text, id],
+        )?;
+        if rows == 0 {
+            return Err(rusqlite::Error::QueryReturnedNoRows);
+        }
+        Ok(())
     }
 
     pub fn add_meeting(
@@ -210,7 +238,8 @@ impl Database {
                 text TEXT NOT NULL,
                 timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
                 duration_ms INTEGER,
-                model TEXT DEFAULT 'base'
+                model TEXT DEFAULT 'base',
+                audio_data BLOB
             )",
             [],
         )?;
@@ -424,5 +453,47 @@ mod tests {
         let db = Database::new_in_memory().unwrap();
         let result = db.rename_meeting(999, "nope.wav");
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_add_voice_note_and_update_text() {
+        let db = Database::new_in_memory().unwrap();
+        let audio = vec![0u8; 200];
+        let id = db.add_voice_note(&audio, 3000, "base").unwrap();
+        assert!(id > 0);
+
+        let history = db.get_history(10).unwrap();
+        assert_eq!(history.len(), 1);
+        assert_eq!(history[0].text, "");
+        assert_eq!(history[0].duration_ms, Some(3000));
+        assert_eq!(history[0].model, "base");
+
+        db.update_transcription_text(id, "Hello world").unwrap();
+        let history = db.get_history(10).unwrap();
+        assert_eq!(history[0].text, "Hello world");
+    }
+
+    #[test]
+    fn test_update_transcription_text_not_found() {
+        let db = Database::new_in_memory().unwrap();
+        let result = db.update_transcription_text(999, "text");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_voice_note_does_not_affect_meetings() {
+        let db = Database::new_in_memory().unwrap();
+        db.add_voice_note(&[0u8; 100], 2000, "base").unwrap();
+        let meetings = db.get_meetings(10).unwrap();
+        assert_eq!(meetings.len(), 0);
+    }
+
+    #[test]
+    fn test_old_add_transcription_still_works() {
+        let db = Database::new_in_memory().unwrap();
+        let id = db.add_transcription("hello", Some(1000), "base").unwrap();
+        assert!(id > 0);
+        let history = db.get_history(10).unwrap();
+        assert_eq!(history[0].text, "hello");
     }
 }

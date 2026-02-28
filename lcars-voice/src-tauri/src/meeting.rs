@@ -19,30 +19,35 @@ impl MeetingSession {
 
     /// Encode f32 audio samples to WAV bytes in memory.
     pub fn encode_wav(&self, samples: &[f32]) -> Result<Vec<u8>, String> {
-        let spec = hound::WavSpec {
-            channels: 1,
-            sample_rate: 16000,
-            bits_per_sample: 16,
-            sample_format: hound::SampleFormat::Int,
-        };
-
-        let mut cursor = Cursor::new(Vec::new());
-        {
-            let mut writer = hound::WavWriter::new(&mut cursor, spec)
-                .map_err(|e| format!("WAV writer error: {}", e))?;
-            for &sample in samples {
-                let clamped = sample.clamp(-1.0, 1.0);
-                let value = (clamped * i16::MAX as f32) as i16;
-                writer
-                    .write_sample(value)
-                    .map_err(|e| format!("WAV write error: {}", e))?;
-            }
-            writer
-                .finalize()
-                .map_err(|e| format!("WAV finalize error: {}", e))?;
-        }
-        Ok(cursor.into_inner())
+        encode_wav(samples)
     }
+}
+
+/// Encode f32 audio samples to 16kHz mono 16-bit WAV bytes.
+pub fn encode_wav(samples: &[f32]) -> Result<Vec<u8>, String> {
+    let spec = hound::WavSpec {
+        channels: 1,
+        sample_rate: 16000,
+        bits_per_sample: 16,
+        sample_format: hound::SampleFormat::Int,
+    };
+
+    let mut cursor = Cursor::new(Vec::new());
+    {
+        let mut writer = hound::WavWriter::new(&mut cursor, spec)
+            .map_err(|e| format!("WAV writer error: {}", e))?;
+        for &sample in samples {
+            let clamped = sample.clamp(-1.0, 1.0);
+            let value = (clamped * i16::MAX as f32) as i16;
+            writer
+                .write_sample(value)
+                .map_err(|e| format!("WAV write error: {}", e))?;
+        }
+        writer
+            .finalize()
+            .map_err(|e| format!("WAV finalize error: {}", e))?;
+    }
+    Ok(cursor.into_inner())
 }
 
 #[cfg(test)]
@@ -101,5 +106,16 @@ mod tests {
         let cursor = Cursor::new(wav_bytes);
         let reader = hound::WavReader::new(cursor).unwrap();
         assert_eq!(reader.len(), 0);
+    }
+
+    #[test]
+    fn test_standalone_encode_wav() {
+        let samples = vec![0.0f32; 16000];
+        let wav_bytes = encode_wav(&samples).unwrap();
+        assert_eq!(&wav_bytes[0..4], b"RIFF");
+        let cursor = Cursor::new(wav_bytes);
+        let reader = hound::WavReader::new(cursor).unwrap();
+        assert_eq!(reader.spec().sample_rate, 16000);
+        assert_eq!(reader.len(), 16000);
     }
 }
