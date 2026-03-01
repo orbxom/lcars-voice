@@ -29,10 +29,7 @@ const MODEL_URLS: &[(&str, &str)] = &[
 
 /// Returns the directory where models are stored.
 pub fn models_dir() -> PathBuf {
-    dirs::data_local_dir()
-        .unwrap_or_else(|| PathBuf::from("."))
-        .join("lcars-voice")
-        .join("models")
+    crate::paths::app_data_dir().join("models")
 }
 
 /// Returns the expected path for a given model name.
@@ -101,8 +98,8 @@ fn download_file(
 ) -> Result<PathBuf, String> {
     let dir = models_dir();
 
-    eprintln!(
-        "[LCARS] model_manager: downloading '{}' to {:?}",
+    log::info!(
+        "model_manager: downloading '{}' to {:?}",
         model_label, dest
     );
 
@@ -166,8 +163,8 @@ fn download_file(
     fs::rename(&downloading_path, &dest)
         .map_err(|e| format!("Failed to rename temp file to {:?}: {}", dest, e))?;
 
-    eprintln!(
-        "[LCARS] model_manager: download complete, {} bytes written to {:?}",
+    log::info!(
+        "model_manager: download complete, {} bytes written to {:?}",
         bytes_downloaded, dest
     );
 

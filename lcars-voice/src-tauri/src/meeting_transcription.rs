@@ -108,8 +108,8 @@ pub fn filter_hallucinations(segments: Vec<WhisperSegment>) -> Vec<WhisperSegmen
 
     let total_removed = no_speech_removed + non_latin_removed;
     if total_removed > 0 {
-        eprintln!(
-            "[LCARS] filter_hallucinations: removed {}/{} segments ({} no-speech, {} non-Latin)",
+        log::info!(
+            "filter_hallucinations: removed {}/{} segments ({} no-speech, {} non-Latin)",
             total_removed, initial_count, no_speech_removed, non_latin_removed
         );
     }
@@ -258,8 +258,8 @@ pub fn transcribe_meeting_audio(
     model_name: &str,
     app: Option<tauri::AppHandle>,
 ) -> Result<Vec<WhisperSegment>, String> {
-    eprintln!(
-        "[LCARS] meeting_transcription: model={}, samples={}",
+    log::info!(
+        "meeting_transcription: model={}, samples={}",
         model_name,
         audio_data.len()
     );
@@ -295,8 +295,8 @@ pub fn transcribe_meeting_audio(
         }
     }
 
-    eprintln!(
-        "[LCARS] meeting_transcription: {} segments extracted",
+    log::info!(
+        "meeting_transcription: {} segments extracted",
         segments.len()
     );
     Ok(segments)
@@ -355,12 +355,12 @@ pub fn run_diarization(wav_bytes: &[u8]) -> Option<Vec<SpeakerTurn>> {
     let mut file = match std::fs::File::create(&temp_path) {
         Ok(f) => f,
         Err(e) => {
-            eprintln!("[LCARS] run_diarization: failed to create temp file: {}", e);
+            log::warn!("run_diarization: failed to create temp file: {}", e);
             return None;
         }
     };
     if let Err(e) = file.write_all(wav_bytes) {
-        eprintln!("[LCARS] run_diarization: failed to write temp file: {}", e);
+        log::warn!("run_diarization: failed to write temp file: {}", e);
         let _ = std::fs::remove_file(&temp_path);
         return None;
     }
@@ -381,8 +381,8 @@ pub fn run_diarization(wav_bytes: &[u8]) -> Option<Vec<SpeakerTurn>> {
     let output = match cmd.output() {
         Ok(o) => o,
         Err(e) => {
-            eprintln!(
-                "[LCARS] run_diarization: failed to run Python (not found at '{}' or execution error): {}",
+            log::warn!(
+                "run_diarization: failed to run Python (not found at '{}' or execution error): {}",
                 python, e
             );
             let _ = std::fs::remove_file(&temp_path);
@@ -395,8 +395,8 @@ pub fn run_diarization(wav_bytes: &[u8]) -> Option<Vec<SpeakerTurn>> {
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
-        eprintln!(
-            "[LCARS] run_diarization: Python script failed (exit {}): {}",
+        log::warn!(
+            "run_diarization: Python script failed (exit {}): {}",
             output.status, stderr
         );
         return None;
@@ -406,14 +406,14 @@ pub fn run_diarization(wav_bytes: &[u8]) -> Option<Vec<SpeakerTurn>> {
     let stdout = String::from_utf8_lossy(&output.stdout);
     match serde_json::from_str::<Vec<SpeakerTurn>>(&stdout) {
         Ok(turns) => {
-            eprintln!(
-                "[LCARS] run_diarization: found {} speaker turns",
+            log::info!(
+                "run_diarization: found {} speaker turns",
                 turns.len()
             );
             Some(turns)
         }
         Err(e) => {
-            eprintln!("[LCARS] run_diarization: failed to parse JSON: {}", e);
+            log::warn!("run_diarization: failed to parse JSON: {}", e);
             None
         }
     }

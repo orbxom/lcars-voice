@@ -77,6 +77,7 @@ Scripts (scripts/)
 - Whisper models: `~/.local/share/lcars-voice/models/ggml-{base,small,medium,large}.bin`
 - Meeting recordings: Stored as WAV BLOBs in `~/.local/share/lcars-voice/history.db` (`meetings` table)
 - Unix socket: `$XDG_RUNTIME_DIR/lcars-voice.sock`
+- Log files: `~/.local/share/lcars-voice/logs/lcars-voice-YYYY-MM-DD.log` (daily rotation, 14-day retention)
 - Whisper model: Configurable via UI dropdown (base, small, medium, large). Falls back to `WHISPER_MODEL` env var, then defaults to `base`. Models auto-download from HuggingFace on first use.
 
 ## Frontend Notes
@@ -85,7 +86,7 @@ Scripts (scripts/)
 - Antonio font self-hosted in `src/fonts/`
 - LCARS color palette: Orange (#FF9900), Purple (#CC99CC), Blue (#9999FF), Tan (#FFCC99)
 - Tauri events: `recording-started`, `transcribing`, `transcription-complete`, `transcription-error`, `model-download-progress`, `meeting-saved`, `meeting-transcription-progress`, `meeting-transcription-complete`
-- Logging uses `[LCARS]` prefix
+- Logging: Uses `log` + `fern` crates for dual output (stderr with `[LCARS]` prefix + daily log file). Levels: error/warn/info/debug.
 
 ## Dependencies
 
@@ -94,6 +95,8 @@ Rust crates (no external runtime dependencies):
 - `rubato` -- audio resampling to 16KHz for Whisper
 - `whisper-rs` -- native whisper.cpp bindings (bundles whisper.cpp, requires C++ compiler at build time)
 - `hound` -- WAV file encoding/decoding (meeting audio)
+- `log` -- facade for structured logging (error/warn/info/debug macros)
+- `fern` -- logging dispatcher for dual output (stderr + daily log file)
 - `rusqlite` -- SQLite for transcription history and meeting storage
 - `reqwest` -- HTTP client for model download
 - `chrono` -- date/time handling for meeting sessions

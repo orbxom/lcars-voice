@@ -97,8 +97,8 @@ impl Recorder {
         const PAREC_CHANNELS: u16 = 1;
 
         let monitor_source = audio_sources::get_default_monitor_source()?;
-        eprintln!(
-            "[LCARS] recording: using monitor source: {}",
+        log::debug!(
+            "recording: using monitor source: {}",
             monitor_source
         );
 
@@ -123,8 +123,8 @@ impl Recorder {
                 )
             })?;
 
-        eprintln!(
-            "[LCARS] recording: parec started (pid={}), capturing @DEFAULT_MONITOR@ at {}Hz mono",
+        log::debug!(
+            "recording: parec started (pid={}), capturing monitor at {}Hz mono",
             child.id(),
             PAREC_RATE,
         );
@@ -150,7 +150,7 @@ impl Recorder {
                     Ok(0) => break,
                     Ok(n) => n,
                     Err(e) => {
-                        eprintln!("[LCARS] recording: parec read error: {}", e);
+                        log::error!("recording: parec read error: {}", e);
                         break;
                     }
                 };
@@ -171,8 +171,8 @@ impl Recorder {
                     }
                 }
             }
-            eprintln!(
-                "[LCARS] recording: parec reader exiting: total_bytes={}, total_samples={}, discarded={}",
+            log::debug!(
+                "recording: parec reader exiting: total_bytes={}, total_samples={}, discarded={}",
                 total_bytes, total_samples, discarded_samples
             );
         });
@@ -200,8 +200,8 @@ impl Recorder {
         self.device_sample_rate = config.sample_rate().0;
         self.device_channels = config.channels();
 
-        eprintln!(
-            "[LCARS] recording: device={:?}, rate={}, channels={}",
+        log::debug!(
+            "recording: device={:?}, rate={}, channels={}",
             device.name().unwrap_or_else(|_| "unknown".to_string()),
             self.device_sample_rate,
             self.device_channels,
@@ -259,7 +259,7 @@ impl Recorder {
                     }
                 },
                 move |err| {
-                    eprintln!("[LCARS] recording: stream error: {}", err);
+                    log::error!("recording: stream error: {}", err);
                 },
                 None,
             )
@@ -274,8 +274,8 @@ impl Recorder {
         // Start monitor capture via parec if in dual-stream mode
         if let CaptureMode::MicAndMonitor = mode {
             if let Err(e) = self.start_parec_monitor() {
-                eprintln!(
-                    "[LCARS] recording: monitor capture failed ({}), continuing mic-only",
+                log::warn!(
+                    "recording: monitor capture failed ({}), continuing mic-only",
                     e
                 );
             }
@@ -283,7 +283,7 @@ impl Recorder {
 
         self.start_time = Some(Instant::now());
 
-        eprintln!("[LCARS] recording: stream started");
+        log::info!("recording: stream started");
         Ok(())
     }
 
@@ -308,11 +308,11 @@ impl Recorder {
         if let Some(mut child) = self.monitor_process.take() {
             let _ = child.kill();
             let _ = child.wait();
-            eprintln!("[LCARS] recording: parec process terminated");
+            log::debug!("recording: parec process terminated");
         }
         if let Some(thread) = self.monitor_reader_thread.take() {
             let _ = thread.join();
-            eprintln!("[LCARS] recording: parec reader thread joined");
+            log::debug!("recording: parec reader thread joined");
         }
         self.start_time = None;
 
@@ -327,8 +327,8 @@ impl Recorder {
             return Err("No audio data captured".to_string());
         }
 
-        eprintln!(
-            "[LCARS] recording: captured {} raw samples ({} ms)",
+        log::debug!(
+            "recording: captured {} raw samples ({} ms)",
             raw_samples.len(),
             duration_ms
         );
@@ -355,8 +355,8 @@ impl Recorder {
                 .cloned()
                 .fold(f32::NEG_INFINITY, f32::max);
             let mon_rms = rms(&monitor_samples);
-            eprintln!(
-                "[LCARS] recording: monitor raw: count={}, min={:.6}, max={:.6}, rms={:.6}",
+            log::debug!(
+                "recording: monitor raw: count={}, min={:.6}, max={:.6}, rms={:.6}",
                 monitor_samples.len(),
                 mon_min,
                 mon_max,
@@ -364,8 +364,8 @@ impl Recorder {
             );
             // Mic stats too
             let mic_rms = rms(&mic_audio);
-            eprintln!(
-                "[LCARS] recording: mic resampled: count={}, rms={:.6}",
+            log::debug!(
+                "recording: mic resampled: count={}, rms={:.6}",
                 mic_audio.len(),
                 mic_rms
             );
@@ -374,20 +374,20 @@ impl Recorder {
             let monitor_audio = resample_to_16khz(&monitor_mono, self.monitor_sample_rate)?;
 
             let mon_res_rms = rms(&monitor_audio);
-            eprintln!(
-                "[LCARS] recording: monitor resampled: count={}, rms={:.6}",
+            log::debug!(
+                "recording: monitor resampled: count={}, rms={:.6}",
                 monitor_audio.len(),
                 mon_res_rms
             );
 
             mix_streams(&mic_audio, &monitor_audio)
         } else {
-            eprintln!("[LCARS] recording: NO monitor samples captured!");
+            log::warn!("recording: NO monitor samples captured!");
             mic_audio
         };
 
-        eprintln!(
-            "[LCARS] recording: processed to {} mono 16KHz samples",
+        log::debug!(
+            "recording: processed to {} mono 16KHz samples",
             audio_data.len()
         );
 

@@ -7,9 +7,11 @@
 
 mod audio_sources;
 mod database;
+mod logging;
 mod meeting;
 mod model_manager;
 mod meeting_transcription;
+mod paths;
 mod recording;
 mod transcription;
 
@@ -29,6 +31,7 @@ use tauri::{
     Emitter, Manager, State,
 };
 use tauri_plugin_global_shortcut::{Code, GlobalShortcutExt, Modifiers, Shortcut, ShortcutState};
+use log::{debug, error, info, warn};
 use tauri_plugin_store::StoreExt;
 use whisper_rs::{WhisperContext, WhisperContextParameters};
 
@@ -106,15 +109,15 @@ fn ensure_whisper_context(
 
         // Non-fatal: download VAD model if not present
         if !model_manager::is_vad_model_downloaded() {
-            eprintln!("[LCARS] VAD model not found, downloading...");
+            info!("VAD model not found, downloading...");
             if let Err(e) = model_manager::download_vad_model(app) {
-                eprintln!("[LCARS] WARNING: Failed to download VAD model: {}", e);
+                warn!("Failed to download VAD model: {}", e);
             }
         }
 
         let path = model_manager::model_path(model_name);
         let path_str = path.to_str().ok_or("Invalid model path")?;
-        eprintln!("[LCARS] Loading whisper model: {}", model_name);
+        info!("Loading whisper model: {}", model_name);
         let mut ctx_params = WhisperContextParameters::default();
         ctx_params.use_gpu(cfg!(feature = "cuda"));
         ctx_params.flash_attn(cfg!(feature = "cuda"));
@@ -183,12 +186,12 @@ fn handle_start_recording(app: &tauri::AppHandle) -> Result<(), String> {
 
     let (capture_mode, session) = if mode == RecordingMode::Meeting {
         let session = MeetingSession::new();
-        eprintln!("[LCARS] Meeting recording started: {}", session.filename());
+        info!("Meeting recording started: {}", session.filename());
         let cm = if audio_sources::is_monitor_capture_available() {
-            eprintln!("[LCARS] Monitor capture available (parec found)");
+            info!("Monitor capture available (parec found)");
             recording::CaptureMode::MicAndMonitor
         } else {
-            eprintln!("[LCARS] No monitor capture available (parec not found), recording mic only");
+            info!("No monitor capture available (parec not found), recording mic only");
             recording::CaptureMode::MicOnly
         };
         (cm, Some(session))
@@ -224,12 +227,12 @@ fn handle_start_recording(app: &tauri::AppHandle) -> Result<(), String> {
         }
     }
 
-    eprintln!("[LCARS] Recording started");
+    info!("Recording started");
     Ok(())
 }
 
 fn handle_stop_and_transcribe(app: &tauri::AppHandle) {
-    eprintln!("[LCARS] Stopping recording, starting transcription");
+    info!("Stopping recording, starting transcription");
     let state = app.state::<AppState>();
     state.is_recording.store(false, Ordering::SeqCst);
 
@@ -297,7 +300,7 @@ fn handle_stop_and_transcribe(app: &tauri::AppHandle) {
                         if let Err(e) =
                             db.add_meeting(&filename, &wav_bytes, recording.duration_ms)
                         {
-                            eprintln!("[LCARS] Failed to save meeting to DB: {}", e);
+                            error!("Failed to save meeting to DB: {}", e);
                             let _ = app_clone.emit(
                                 "transcription-error",
                                 format!("Failed to save meeting: {}", e),
@@ -337,11 +340,11 @@ fn handle_stop_and_transcribe(app: &tauri::AppHandle) {
             let record_id = match state.db.lock() {
                 Ok(db) => match db.add_voice_note(&wav_bytes, recording.duration_ms, &model) {
                     Ok(id) => {
-                        eprintln!("[LCARS] Voice note audio saved to DB, id={}", id);
+                        info!("Voice note audio saved to DB, id={}", id);
                         id
                     }
                     Err(e) => {
-                        eprintln!("[LCARS] Failed to save voice note audio: {}", e);
+                        error!("Failed to save voice note audio: {}", e);
                         let _ = app_clone.emit(
                             "transcription-error",
                             format!("Failed to save audio: {}", e),
@@ -396,7 +399,7 @@ fn handle_stop_and_transcribe(app: &tauri::AppHandle) {
                     // Step 6: Update DB record with transcribed text
                     if let Ok(db) = state.db.lock() {
                         if let Err(e) = db.update_transcription_text(record_id, &result.text) {
-                            eprintln!("[LCARS] Failed to update transcription text: {}", e);
+                            error!("Failed to update transcription text: {}", e);
                         }
                     }
 
@@ -406,7 +409,7 @@ fn handle_stop_and_transcribe(app: &tauri::AppHandle) {
                     let _ = app_clone.emit("transcription-complete", result.text);
                 }
                 Err(e) => {
-                    eprintln!("[LCARS] Transcription failed but audio preserved (id={})", record_id);
+                    error!("Transcription failed but audio preserved (id={})", record_id);
                     send_notification("LCARS Voice", &format!("Error: {}", e));
                     let _ = app_clone.emit("transcription-error", e);
                 }
@@ -464,10 +467,10 @@ fn send_notification(title: &str, body: &str) {
             .status()
         {
             Ok(s) if s.success() => {
-                eprintln!("[LCARS] notification: Sent '{}' - '{}'", title, body)
+                debug!("notification: Sent '{}' - '{}'", title, body)
             }
-            Ok(s) => eprintln!("[LCARS] notification: notify-send exited with {}", s),
-            Err(e) => eprintln!("[LCARS] notification: Failed to run notify-send: {:?}", e),
+            Ok(s) => warn!("notification: notify-send exited with {}", s),
+            Err(e) => warn!("notification: Failed to run notify-send: {:?}", e),
         }
     });
 }
@@ -527,6 +530,11 @@ fn set_recording_mode(app: tauri::AppHandle, mode: String) -> Result<(), String>
     store.save().map_err(|e| e.to_string())?;
     *state.recording_mode.lock().map_err(|e| e.to_string())? = parsed;
     Ok(())
+}
+
+#[tauri::command]
+fn get_log_directory() -> String {
+    logging::get_log_dir().to_string_lossy().to_string()
 }
 
 #[tauri::command]
@@ -596,8 +604,8 @@ async fn transcribe_meeting(app: tauri::AppHandle, id: i64) -> Result<String, St
                 .map_err(|e| e.to_string())?;
         }
 
-        eprintln!(
-            "[LCARS] Meeting {} transcribed: {} chars",
+        info!(
+            "Meeting {} transcribed: {} chars",
             id,
             transcript.len()
         );
@@ -608,7 +616,8 @@ async fn transcribe_meeting(app: tauri::AppHandle, id: i64) -> Result<String, St
 }
 
 fn main() {
-    eprintln!("[LCARS] Application starting");
+    logging::init_logging();
+    info!("Application starting");
     let db = Database::new().expect("Failed to initialize database");
     let recorder = Recorder::new();
 
@@ -643,7 +652,7 @@ fn main() {
                         return;
                     }
 
-                    eprintln!("[LCARS] hotkey: Super+Alt+H pressed");
+                    debug!("hotkey: Super+Alt+H pressed");
                     let state = app.state::<AppState>();
                     let was_recording = state.is_recording.load(Ordering::SeqCst);
 
@@ -651,7 +660,7 @@ fn main() {
                         handle_stop_and_transcribe(app);
                     } else {
                         if let Err(e) = handle_start_recording(app) {
-                            eprintln!("[LCARS] hotkey: Failed to start recording: {}", e);
+                            error!("hotkey: Failed to start recording: {}", e);
                         }
                     }
                 })
@@ -676,6 +685,7 @@ fn main() {
             get_recording_mode,
             set_recording_mode,
             list_audio_sources,
+            get_log_directory,
             get_elapsed_time,
             get_meeting_history,
             rename_meeting,
@@ -690,8 +700,8 @@ fn main() {
             }
 
             match app.global_shortcut().register(hotkey) {
-                Ok(_) => eprintln!("[LCARS] setup: Hotkey Super+Alt+H registered"),
-                Err(e) => eprintln!("[LCARS] setup: Failed to register hotkey: {:?}", e),
+                Ok(_) => info!("setup: Hotkey Super+Alt+H registered"),
+                Err(e) => error!("setup: Failed to register hotkey: {:?}", e),
             }
 
             // Set up Unix socket toggle listener for external control
@@ -713,7 +723,7 @@ fn main() {
                         .recording_mode
                         .lock()
                         .unwrap_or_else(|e| e.into_inner()) = mode;
-                    eprintln!("[LCARS] setup: Recording mode synced to {:?}", mode);
+                    info!("setup: Recording mode synced to {:?}", mode);
                 }
             }
 
@@ -721,11 +731,11 @@ fn main() {
                 let listener = match tokio::net::UnixListener::bind(&socket_path) {
                     Ok(l) => l,
                     Err(e) => {
-                        eprintln!("[LCARS] toggle: Failed to bind socket: {}", e);
+                        error!("toggle: Failed to bind socket: {}", e);
                         return;
                     }
                 };
-                eprintln!("[LCARS] toggle: Listening on {:?}", socket_path);
+                info!("toggle: Listening on {:?}", socket_path);
                 loop {
                     if let Ok((mut stream, _)) = listener.accept().await {
                         use tokio::io::AsyncReadExt;
@@ -733,14 +743,14 @@ fn main() {
                         if let Ok(n) = stream.read(&mut buf).await {
                             let msg = String::from_utf8_lossy(&buf[..n]);
                             if msg.trim() == "toggle" {
-                                eprintln!("[LCARS] toggle: Socket command received");
+                                debug!("toggle: Socket command received");
                                 let state = app_handle.state::<AppState>();
                                 let was_recording = state.is_recording.load(Ordering::SeqCst);
                                 if was_recording {
                                     handle_stop_and_transcribe(&app_handle);
                                 } else {
                                     if let Err(e) = handle_start_recording(&app_handle) {
-                                        eprintln!("[LCARS] toggle: Failed: {}", e);
+                                        error!("toggle: Failed: {}", e);
                                     }
                                 }
                             }
@@ -784,7 +794,7 @@ fn main() {
         .expect("error while running tauri application");
 
     // Clean up socket on normal exit (SIGKILL/crashes handled by toggle script timeout)
-    eprintln!("[LCARS] Cleaning up socket on exit");
+    info!("Cleaning up socket on exit");
     let _ = std::fs::remove_file(&socket_path);
 }
 

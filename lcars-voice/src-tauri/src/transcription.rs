@@ -58,8 +58,8 @@ pub fn transcribe(
     model_name: &str,
     app: Option<tauri::AppHandle>,
 ) -> Result<TranscriptionResult, String> {
-    eprintln!(
-        "[LCARS] transcription: model={}, samples={}",
+    log::info!(
+        "transcription: model={}, samples={}",
         model_name,
         audio_data.len()
     );
@@ -80,8 +80,8 @@ pub fn transcribe(
     for i in 0..num_segments {
         if let Some(segment) = state.get_segment(i) {
             if segment.no_speech_probability() > 0.8 {
-                eprintln!(
-                    "[LCARS] transcription: skipping segment {} (no_speech_prob={:.2})",
+                log::debug!(
+                    "transcription: skipping segment {} (no_speech_prob={:.2})",
                     i,
                     segment.no_speech_probability()
                 );
@@ -95,7 +95,7 @@ pub fn transcribe(
 
     let text = detect_and_remove_repetitions(&text).trim().to_string();
 
-    eprintln!("[LCARS] transcription: Success, {} chars", text.len());
+    log::info!("transcription: Success, {} chars", text.len());
 
     Ok(TranscriptionResult {
         text,
@@ -151,8 +151,8 @@ pub fn detect_and_remove_repetitions(text: &str) -> String {
                 let mut result_words: Vec<&str> = before.to_vec();
                 result_words.extend_from_slice(after);
                 let cleaned = result_words.join(" ");
-                eprintln!(
-                    "[LCARS] transcription: repetition detected and removed ({} -> {} chars)",
+                log::debug!(
+                    "transcription: repetition detected and removed ({} -> {} chars)",
                     text.len(),
                     cleaned.len()
                 );

@@ -8,7 +8,7 @@ pub struct MeetingSession {
 impl MeetingSession {
     pub fn new() -> Self {
         let now = Utc::now();
-        eprintln!("[LCARS] Meeting session created at {}", now);
+        log::debug!("Meeting session created at {}", now);
         Self { start_time: now }
     }
 

@@ -74,10 +74,7 @@ impl Database {
     }
 
     fn get_db_path() -> PathBuf {
-        dirs::data_local_dir()
-            .unwrap_or_else(|| PathBuf::from("."))
-            .join("lcars-voice")
-            .join("history.db")
+        crate::paths::app_data_dir().join("history.db")
     }
 
     pub fn add_transcription(
