@@ -20,7 +20,32 @@ Desktop voice recording, meeting recording, and transcription app with a Star Tr
 curl -sSL https://raw.githubusercontent.com/orbxom/lcars-voice/main/lcars-voice/install.sh | bash
 ```
 
-This auto-detects your GPU and installs the appropriate variant (CPU or CUDA).
+This will:
+- Auto-detect your GPU and install the appropriate variant (CPU or CUDA)
+- Install runtime dependencies (xclip, libnotify-bin, socat, dconf-cli)
+- Set up the **Super+Alt+H** keybinding for GNOME
+- Create a desktop launcher with icons
+
+#### Installer options
+
+Pass flags via `bash -s --`:
+
+```bash
+# Force CPU-only variant
+curl -sSL https://raw.githubusercontent.com/orbxom/lcars-voice/main/lcars-voice/install.sh | bash -s -- --cpu
+
+# Force CUDA variant
+curl -sSL https://raw.githubusercontent.com/orbxom/lcars-voice/main/lcars-voice/install.sh | bash -s -- --cuda
+
+# Skip GNOME keybinding setup (e.g., for KDE)
+curl -sSL https://raw.githubusercontent.com/orbxom/lcars-voice/main/lcars-voice/install.sh | bash -s -- --no-keybinding
+
+# Skip dependency installation
+curl -sSL https://raw.githubusercontent.com/orbxom/lcars-voice/main/lcars-voice/install.sh | bash -s -- --no-deps
+
+# Combine flags
+curl -sSL https://raw.githubusercontent.com/orbxom/lcars-voice/main/lcars-voice/install.sh | bash -s -- --cpu --no-keybinding
+```
 
 ### Build from source
 
@@ -54,7 +79,7 @@ For CUDA builds, install the CUDA toolkit. For CPU-only: `cargo tauri build --no
 
 ### Super+Alt+H keybinding does nothing
 
-The keybinding is a GNOME custom keybinding that runs `lcars-voice-toggle.sh`. There are two layers that can fail:
+The keybinding is a GNOME custom keybinding that runs `lcars-voice-toggle`. There are three layers that can fail:
 
 #### 1. GNOME custom keybindings stopped working entirely
 
@@ -95,6 +120,25 @@ cat /tmp/lcars-toggle.log
   pkill -f "target/release/lcars-voice"
   rm -f "${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/lcars-voice.sock"
   ```
+
+#### 3. Keybinding points to an old path
+
+**Symptom**: Custom keybindings work but LCARS Voice doesn't respond. Happens after moving or renaming the project folder.
+
+**Diagnosis**: Check what command the keybinding runs:
+```bash
+dconf read /org/gnome/settings-daemon/plugins/media-keys/custom-keybindings/lcars-voice/command
+```
+If it points to an old project directory (e.g. a previous folder name), the toggle script no longer exists at that path.
+
+**Fix**: Install the toggle script to a stable location and update the keybinding:
+```bash
+# Re-run the installer to place the toggle script in ~/.local/bin
+bash install.sh --no-deps
+
+# Or manually update the keybinding to the correct path
+dconf write /org/gnome/settings-daemon/plugins/media-keys/custom-keybindings/lcars-voice/command "'$HOME/.local/bin/lcars-voice-toggle'"
+```
 
 ### Re-registering the keybinding
 
