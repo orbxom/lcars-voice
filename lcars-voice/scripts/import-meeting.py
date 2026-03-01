@@ -56,7 +56,8 @@ def main():
         print(f"Converting to 16kHz mono WAV...")
         convert_to_wav(input_path, tmp_path)
 
-        wav_bytes = open(tmp_path, "rb").read()
+        with open(tmp_path, "rb") as f:
+            wav_bytes = f.read()
         size_bytes = len(wav_bytes)
         print(f"WAV size: {size_bytes / 1024 / 1024:.1f} MB")
     finally:

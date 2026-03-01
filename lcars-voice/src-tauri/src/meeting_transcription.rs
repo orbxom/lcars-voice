@@ -29,8 +29,6 @@ import json, sys, os
 from pyannote.audio import Pipeline
 pipeline = Pipeline.from_pretrained("pyannote/speaker-diarization-3.1", token=os.environ.get("HF_TOKEN"))
 result = pipeline(sys.argv[1])
-if hasattr(result, "speaker_diarization"):
-    result = result.speaker_diarization
 turns = [{"start": t.start, "end": t.end, "speaker": s} for t, _, s in result.itertracks(yield_label=True)]
 json.dump(turns, sys.stdout)
 "#;
@@ -309,16 +307,26 @@ pub fn transcribe_meeting_audio(
 /// Uses `$XDG_RUNTIME_DIR` (a per-user, permission-restricted directory) when
 /// available, falling back to `/tmp` otherwise.
 pub fn diarize_temp_path(timestamp: u128) -> String {
-    let runtime_dir = std::env::var("XDG_RUNTIME_DIR").unwrap_or_else(|_| "/tmp".to_string());
-    format!("{}/lcars-diarize-{}.wav", runtime_dir, timestamp)
+    let runtime_dir = std::env::var("XDG_RUNTIME_DIR").ok();
+    diarize_temp_path_with(runtime_dir.as_deref(), timestamp)
+}
+
+fn diarize_temp_path_with(runtime_dir: Option<&str>, timestamp: u128) -> String {
+    let dir = runtime_dir.unwrap_or("/tmp");
+    format!("{}/lcars-diarize-{}.wav", dir, timestamp)
 }
 
 /// Resolve the Python interpreter for diarization.
 ///
 /// Priority: $PYTHON_ENV > ~/voice-to-text-env/bin/python (if exists) > python3
 pub fn resolve_python() -> String {
-    if let Ok(custom) = std::env::var("PYTHON_ENV") {
-        return custom;
+    let python_env = std::env::var("PYTHON_ENV").ok();
+    resolve_python_with(python_env.as_deref())
+}
+
+fn resolve_python_with(python_env: Option<&str>) -> String {
+    if let Some(custom) = python_env {
+        return custom.to_string();
     }
     if let Some(home) = dirs::home_dir() {
         let venv = home.join("voice-to-text-env/bin/python");
@@ -702,17 +710,13 @@ mod tests {
 
     #[test]
     fn test_diarize_temp_path_uses_xdg_runtime_dir() {
-        // Set XDG_RUNTIME_DIR and verify the path uses it
-        std::env::set_var("XDG_RUNTIME_DIR", "/run/user/1000");
-        let path = diarize_temp_path(123456);
+        let path = diarize_temp_path_with(Some("/run/user/1000"), 123456);
         assert_eq!(path, "/run/user/1000/lcars-diarize-123456.wav");
-        std::env::remove_var("XDG_RUNTIME_DIR");
     }
 
     #[test]
     fn test_diarize_temp_path_falls_back_to_tmp() {
-        std::env::remove_var("XDG_RUNTIME_DIR");
-        let path = diarize_temp_path(789);
+        let path = diarize_temp_path_with(None, 789);
         assert_eq!(path, "/tmp/lcars-diarize-789.wav");
     }
 
@@ -722,8 +726,7 @@ mod tests {
 
     #[test]
     fn test_resolve_python_default_is_python3() {
-        std::env::remove_var("PYTHON_ENV");
-        let python = resolve_python();
+        let python = resolve_python_with(None);
         // Falls back to python3 when no venv exists at ~/voice-to-text-env/bin/python
         // (or picks up the venv if it does exist on this machine)
         let home = dirs::home_dir().unwrap();
@@ -737,10 +740,8 @@ mod tests {
 
     #[test]
     fn test_resolve_python_respects_env_var() {
-        std::env::set_var("PYTHON_ENV", "/custom/venv/bin/python");
-        let python = resolve_python();
+        let python = resolve_python_with(Some("/custom/venv/bin/python"));
         assert_eq!(python, "/custom/venv/bin/python");
-        std::env::remove_var("PYTHON_ENV");
     }
 
     // ===============================================================

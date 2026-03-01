@@ -208,7 +208,6 @@ fn handle_start_recording(app: &tauri::AppHandle) -> Result<(), String> {
     state.is_recording.store(true, Ordering::SeqCst);
     let _ = app.emit("recording-started", ());
     send_notification(
-        app,
         "LCARS Voice",
         if mode == RecordingMode::Meeting {
             "Meeting recording started"
@@ -253,7 +252,7 @@ fn handle_stop_and_transcribe(app: &tauri::AppHandle) {
             Ok(mut recorder) => match recorder.stop() {
                 Ok(r) => r,
                 Err(e) => {
-                    send_notification(&app_clone, "LCARS Voice", &format!("Error: {}", e));
+                    send_notification("LCARS Voice", &format!("Error: {}", e));
                     let _ = app_clone.emit("transcription-error", e);
                     return;
                 }
@@ -316,7 +315,6 @@ fn handle_stop_and_transcribe(app: &tauri::AppHandle) {
                 }
 
                 send_notification(
-                    &app_clone,
                     "LCARS Voice",
                     &format!("Meeting saved: {}", filename),
                 );
@@ -362,14 +360,13 @@ fn handle_stop_and_transcribe(app: &tauri::AppHandle) {
 
             let _ = app_clone.emit("transcribing", ());
             send_notification(
-                &app_clone,
                 "LCARS Voice",
                 "Recording stopped, transcribing...",
             );
 
             // Step 4: Ensure whisper model is loaded (may trigger download)
             if let Err(e) = ensure_whisper_context(&app_clone, &state, &model) {
-                send_notification(&app_clone, "LCARS Voice", &format!("Model error: {}", e));
+                send_notification("LCARS Voice", &format!("Model error: {}", e));
                 let _ = app_clone.emit("transcription-error", e);
                 return;
             }
@@ -405,12 +402,12 @@ fn handle_stop_and_transcribe(app: &tauri::AppHandle) {
 
                     // Step 7: Notify and emit
                     let preview = truncate_preview(&result.text, 50);
-                    send_notification(&app_clone, "LCARS Voice", &preview);
+                    send_notification("LCARS Voice", &preview);
                     let _ = app_clone.emit("transcription-complete", result.text);
                 }
                 Err(e) => {
                     eprintln!("[LCARS] Transcription failed but audio preserved (id={})", record_id);
-                    send_notification(&app_clone, "LCARS Voice", &format!("Error: {}", e));
+                    send_notification("LCARS Voice", &format!("Error: {}", e));
                     let _ = app_clone.emit("transcription-error", e);
                 }
             }
@@ -457,7 +454,7 @@ fn get_current_model(app: &tauri::AppHandle) -> String {
     resolve_whisper_model(store_value, env_value)
 }
 
-fn send_notification(_app: &tauri::AppHandle, title: &str, body: &str) {
+fn send_notification(title: &str, body: &str) {
     let title = title.to_string();
     let body = body.to_string();
     std::thread::spawn(move || {
@@ -598,9 +595,6 @@ async fn transcribe_meeting(app: tauri::AppHandle, id: i64) -> Result<String, St
             db.save_meeting_transcript(id, &transcript)
                 .map_err(|e| e.to_string())?;
         }
-
-        // 11. Emit completion
-        let _ = app_clone.emit("meeting-transcription-complete", id);
 
         eprintln!(
             "[LCARS] Meeting {} transcribed: {} chars",

@@ -59,7 +59,7 @@ jobs:
       - name: Build (CPU)
         if: matrix.variant == 'cpu'
         working-directory: lcars-voice/src-tauri
-        run: cargo tauri build
+        run: cargo tauri build -- --no-default-features
 
       - name: Build (CUDA)
         if: matrix.variant == 'cuda'
