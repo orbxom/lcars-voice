@@ -69,6 +69,10 @@ describe('escapeHtml() helper', () => {
     expect(escapeHtml('plain text')).toBe('plain text');
   });
 
+  it('should escape single quotes', () => {
+    expect(escapeHtml("it's a test")).toBe("it&#39;s a test");
+  });
+
   it('should handle multiple special characters together', () => {
     expect(escapeHtml('<script>"alert(1)&"</script>')).toBe('&lt;script&gt;&quot;alert(1)&amp;&quot;&lt;/script&gt;');
   });

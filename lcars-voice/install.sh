@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-REPO="orbxom/claude-tools"
+REPO="orbxom/lcars-voice"
 APP="lcars-voice"
 INSTALL_DIR="$HOME/.local/bin"
 DESKTOP_DIR="$HOME/.local/share/applications"

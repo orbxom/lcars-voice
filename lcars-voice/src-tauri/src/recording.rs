@@ -41,12 +41,20 @@ pub struct Recorder {
     monitor_channels: u16,
 }
 
-// SAFETY: cpal::Stream is !Send because it contains platform-specific handles
-// that are not safe to move between threads in general. However, in our usage,
-// the Stream is created and dropped on the main thread (via Mutex<Recorder>),
-// and only the audio callback runs on a separate thread (which accesses only
-// the Arc-shared buffer and atomics, not the Stream itself). The Stream field
-// is only accessed through the Mutex, ensuring single-threaded access.
+// SAFETY: cpal::Stream is !Send due to platform audio handle thread-affinity
+// requirements — on most platforms, the underlying audio API (ALSA, CoreAudio,
+// WASAPI) ties the stream handle to the thread that created it.
+//
+// Our usage is safe because:
+// 1. The Recorder (containing the Stream) is created once at startup and moved
+//    into Tauri's managed state as `Mutex<Option<Recorder>>`.
+// 2. All access to the Recorder goes through that Mutex, which serializes access
+//    and ensures only one thread touches the Stream at a time.
+// 3. The Stream is held for the application lifetime — it is created in
+//    `Recorder::start()` and dropped in `Recorder::stop()`, both called from
+//    Tauri command handlers that acquire the Mutex.
+// 4. The audio callback thread only accesses Arc-shared buffers and atomics
+//    (buffer, is_active, rms_level, waveform_buffer), never the Stream itself.
 unsafe impl Send for Recorder {}
 
 #[derive(Debug)]

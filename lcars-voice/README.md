@@ -1,5 +1,55 @@
 # LCARS Voice
 
+Desktop voice recording, meeting recording, and transcription app with a Star Trek LCARS-themed interface. Built with Rust and Tauri v2.
+
+## Features
+
+- **Voice Notes** — Record and instantly transcribe voice notes to clipboard using Whisper AI
+- **Meeting Recording** — Record meetings with system audio capture and microphone
+- **Meeting Transcription** — Transcribe recorded meetings with optional speaker diarization
+- **Offline** — All transcription runs locally via whisper.cpp (no cloud APIs)
+- **GPU Acceleration** — CUDA support for fast transcription on NVIDIA GPUs
+- **Global Hotkey** — Super+Alt+H to toggle recording from anywhere
+- **Model Selection** — Choose from Whisper base, small, medium, or large models
+
+## Installation
+
+### One-line install (Linux)
+
+```bash
+curl -sSL https://raw.githubusercontent.com/orbxom/lcars-voice/master/lcars-voice/install.sh | bash
+```
+
+This auto-detects your GPU and installs the appropriate variant (CPU or CUDA).
+
+### Build from source
+
+```bash
+cd lcars-voice/src-tauri
+cargo tauri dev      # development
+cargo tauri build    # production (.deb and .AppImage)
+```
+
+Requires: Rust, Node.js, and system dependencies:
+```bash
+sudo apt install xclip libnotify-bin libwebkit2gtk-4.1-dev libayatana-appindicator3-dev
+```
+
+For CUDA builds, install the CUDA toolkit. For CPU-only: `cargo tauri build --no-default-features`.
+
+## Usage
+
+- **Super+Alt+H** — Toggle voice recording (records, transcribes, copies to clipboard)
+- Switch between Voice Note and Meeting modes in the UI
+- Select Whisper model size in the dropdown (base → large, larger = more accurate but slower)
+- Meeting recordings are saved to a local SQLite database and can be transcribed later
+
+## Requirements
+
+- Linux (GNOME recommended for global hotkey support)
+- Optional: NVIDIA GPU + CUDA for faster transcription
+- Optional: Python 3 + pyannote.audio for speaker diarization in meetings
+
 ## Troubleshooting
 
 ### Super+Alt+H keybinding does nothing
@@ -51,7 +101,7 @@ cat /tmp/lcars-toggle.log
 If the keybinding is missing from GNOME entirely:
 ```bash
 dconf write /org/gnome/settings-daemon/plugins/media-keys/custom-keybindings/lcars-voice/binding "'<Super><Alt>h'"
-dconf write /org/gnome/settings-daemon/plugins/media-keys/custom-keybindings/lcars-voice/command "'/home/zknowles/personal/claude-tools/lcars-voice/lcars-voice-toggle.sh'"
+dconf write /org/gnome/settings-daemon/plugins/media-keys/custom-keybindings/lcars-voice/command "'$HOME/.local/bin/lcars-voice-toggle'"
 dconf write /org/gnome/settings-daemon/plugins/media-keys/custom-keybindings/lcars-voice/name "'LCARS Voice Toggle'"
 ```
 

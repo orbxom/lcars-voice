@@ -37,6 +37,7 @@ impl Database {
         }
 
         let conn = Connection::open(&db_path)?;
+        conn.execute_batch("PRAGMA journal_mode=WAL;")?;
 
         conn.execute(
             "CREATE TABLE IF NOT EXISTS transcriptions (
@@ -114,11 +115,12 @@ impl Database {
     }
 
     pub fn search(&self, query: &str, limit: usize) -> Result<Vec<Transcription>> {
-        let pattern = format!("%{}%", query);
+        let escaped = query.replace('\\', "\\\\").replace('%', "\\%").replace('_', "\\_");
+        let pattern = format!("%{}%", escaped);
         let mut stmt = self.conn.prepare(
             "SELECT id, text, timestamp, duration_ms, model
              FROM transcriptions
-             WHERE text LIKE ?1
+             WHERE text LIKE ?1 ESCAPE '\\'
              ORDER BY timestamp DESC
              LIMIT ?2",
         )?;
@@ -232,6 +234,7 @@ impl Database {
 impl Database {
     pub fn new_in_memory() -> Result<Self> {
         let conn = Connection::open_in_memory()?;
+        conn.execute_batch("PRAGMA journal_mode=WAL;")?;
         conn.execute(
             "CREATE TABLE IF NOT EXISTS transcriptions (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -478,6 +481,58 @@ mod tests {
         let db = Database::new_in_memory().unwrap();
         let result = db.update_transcription_text(999, "text");
         assert!(result.is_err());
+    }
+
+    // ===============================================================
+    // WAL mode test (Fix 3)
+    // ===============================================================
+
+    #[test]
+    fn test_wal_mode_enabled() {
+        // WAL mode only applies to file-backed databases (in-memory always reports "memory"),
+        // so we use a temp file to verify the PRAGMA is actually set.
+        let dir = std::env::temp_dir().join("lcars-test-wal");
+        std::fs::create_dir_all(&dir).unwrap();
+        let db_path = dir.join("test-wal.db");
+        // Clean up from any previous run
+        let _ = std::fs::remove_file(&db_path);
+
+        let conn = rusqlite::Connection::open(&db_path).unwrap();
+        conn.execute_batch("PRAGMA journal_mode=WAL;").unwrap();
+        let mode: String = conn
+            .query_row("PRAGMA journal_mode", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(mode, "wal");
+
+        drop(conn);
+        let _ = std::fs::remove_file(&db_path);
+        let _ = std::fs::remove_dir(&dir);
+    }
+
+    // ===============================================================
+    // LIKE wildcard escaping tests (Fix 4)
+    // ===============================================================
+
+    #[test]
+    fn test_search_escapes_percent_wildcard() {
+        let db = Database::new_in_memory().unwrap();
+        db.add_transcription("100% done", None, "base").unwrap();
+        db.add_transcription("something else", None, "base").unwrap();
+        // Searching for literal "%" should only match the record containing "%"
+        let results = db.search("%", 10).unwrap();
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].text, "100% done");
+    }
+
+    #[test]
+    fn test_search_escapes_underscore_wildcard() {
+        let db = Database::new_in_memory().unwrap();
+        db.add_transcription("file_name.txt", None, "base").unwrap();
+        db.add_transcription("filename.txt", None, "base").unwrap();
+        // Searching for "_" should only match the record containing literal "_"
+        let results = db.search("_", 10).unwrap();
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].text, "file_name.txt");
     }
 
     #[test]

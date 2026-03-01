@@ -4,25 +4,15 @@ This file provides guidance to Claude Code when working with code in this reposi
 
 ## Repository Overview
 
-Monorepo of personal productivity tools focused on voice recording, meeting recording, and transcription. Each tool has its own language, dependencies, and CLAUDE.md.
+Desktop voice recording, meeting recording, and transcription tool with an LCARS-themed UI. Built with Rust and JavaScript (Tauri v2).
 
-## Tools
-
-| Tool | Language | Purpose |
-|------|----------|---------|
-| [lcars-voice](lcars-voice/) | Rust + JS (Tauri v2) | Desktop voice recording, meeting recording & transcription with LCARS UI |
-| [docker-claude](docker-claude/) | Docker + Terraform | Browser-accessible remote dev environment with Claude Code |
-
-## Shared Conventions
-
-### Audio Standard
+## Audio Standard
 - Format: 16kHz mono WAV (enforced across all recording/transcription)
 - Capture: `cpal` (cross-platform; ALSA/PulseAudio on Linux)
 - Transcription: `whisper-rs` (native whisper.cpp bindings, GGML models: base/small/medium/large)
 
 ## Git Workflow
 
-- Monorepo with two independent tools — no shared build system
 - Tagging: `lcars-voice-v*` tags trigger GitHub Actions CI/CD releases
 
 ## Key Paths
@@ -33,3 +23,5 @@ Monorepo of personal productivity tools focused on voice recording, meeting reco
 ## History
 
 In February 2026, four standalone tools (voice-to-text, zoom-recorder, meeting-transcripts, slack-to-markdown) were consolidated into lcars-voice or removed.
+
+In March 2026, docker-claude was extracted into its own standalone repository.

@@ -144,8 +144,7 @@ System dependency: `notify-send` (from `libnotify-bin`, typically pre-installed 
 ## Speaker Diarization (Optional)
 
 Meeting transcriptions can include speaker labels via pyannote. Requires:
-- Python environment at `~/voice-to-text-env/bin/python`
-- `pyannote.audio` package installed in that environment
+- Python 3 with `pyannote.audio` installed. Auto-detects `~/voice-to-text-env/bin/python` if it exists, or set `PYTHON_ENV` to a custom path.
 - `HF_TOKEN` environment variable set with a HuggingFace token that has access to `pyannote/speaker-diarization-3.1`
 
 If not available, transcription proceeds without speaker labels.
