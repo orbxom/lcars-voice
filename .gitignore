@@ -1,0 +1,26 @@
+# Virtual environments
+*-env/
+venv/
+.venv/
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+
+# Temporary files
+*.tmp
+*.bak
+*~
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Environment files
+.env
+
+# Claude Code local settings
+.claude/settings.local.json

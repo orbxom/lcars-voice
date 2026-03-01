@@ -1,0 +1,183 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>LCARS Voice Interface</title>
+  <!-- Antonio font loaded locally via styles.css @font-face -->
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <div class="lcars-frame">
+    <!-- Unified LCARS Elbow - Top Left Corner Frame -->
+    <div class="elbow-frame">
+      <svg class="elbow-shape" viewBox="0 0 100 160" preserveAspectRatio="none">
+        <!-- Unified L-shape: rounded outer corner, CONCAVE inner curve (cuts inward) -->
+        <path d="
+          M 25 0
+          L 100 0
+          L 100 36
+          A 50 50 0 0 0 50 86
+          L 50 160
+          L 0 160
+          L 0 25
+          A 25 25 0 0 1 25 0
+          Z
+        " fill="currentColor"/>
+      </svg>
+      <span class="elbow-number">2005</span>
+    </div>
+
+    <!-- Unified Header Bar -->
+    <div class="lcars-header" data-tauri-drag-region>
+      <div class="header-spacer"></div>
+      <div class="header-gap"></div>
+      <div class="header-bar">
+        <div class="header-text-block">
+          <span class="header-title">LCARS VOICE INTERFACE</span>
+          <span class="header-dot">•</span>
+          <span class="header-stardate"><span id="stardate">12:00 PM</span></span>
+        </div>
+        <div class="window-controls">
+          <button class="control-btn minimize" title="Minimize">_</button>
+          <button class="control-btn close" title="Close">×</button>
+        </div>
+      </div>
+      <div class="header-gap"></div>
+      <div class="header-cap right"></div>
+    </div>
+
+    <!-- Black gap row -->
+    <div class="lcars-gap-row"></div>
+
+    <!-- Main Content Area with Frame -->
+    <div class="lcars-body">
+      <!-- Left Sidebar -->
+      <div class="lcars-left">
+        <!-- Spacer for elbow area -->
+        <div class="elbow-spacer"></div>
+        <div class="sidebar">
+          <div class="sidebar-block orange"><span class="block-num">47</span></div>
+          <div class="sidebar-block tan"><span class="block-num">215</span></div>
+          <div class="sidebar-block purple"><span class="block-num">08</span></div>
+          <div class="sidebar-spacer"></div>
+          <div class="sidebar-block blue"><span class="block-num">1701</span></div>
+          <div class="sidebar-block orange"><span class="block-num">93</span></div>
+        </div>
+        <!-- Bottom-Left Elbow: Rounded bottom-left corner bar -->
+        <svg class="elbow-bottom-left" viewBox="0 0 45 90" preserveAspectRatio="none">
+          <path d="M0,0 L45,0 L45,90 L22,90 A22,22 0 0,1 0,68 L0,0 Z" fill="currentColor"/>
+        </svg>
+      </div>
+
+      <!-- Main Content -->
+      <div class="main-content">
+        <!-- Status indicator -->
+        <div class="status-row">
+          <div class="status-indicator" id="status-indicator">
+            <div class="status-dot"></div>
+            <span class="status-text">READY</span>
+          </div>
+        </div>
+
+        <!-- Waveform display -->
+        <div class="waveform-container">
+          <canvas id="waveform" width="320" height="80"></canvas>
+          <div class="waveform-overlay">
+            <div class="scan-line"></div>
+          </div>
+        </div>
+
+        <!-- Model download progress -->
+        <div class="download-progress" id="download-progress" style="display: none;">
+          <div class="download-label">DOWNLOADING MODEL: <span id="download-model-name">BASE</span></div>
+          <div class="progress-bar-container">
+            <div class="progress-bar-fill" id="progress-bar-fill" style="width: 0%"></div>
+          </div>
+          <div class="download-percent" id="download-percent">0%</div>
+        </div>
+
+        <!-- Record button -->
+        <div class="controls-row">
+          <button class="lcars-button record-btn" id="record-btn">
+            <span class="button-icon">●</span>
+            <span class="button-text">RECORD</span>
+          </button>
+          <div class="hotkey-hint">
+            <span class="key">SUPER</span>+<span class="key">ALT</span>+<span class="key">H</span>
+          </div>
+        </div>
+
+        <!-- Divider -->
+        <div class="section-divider">
+          <span class="divider-label">TRANSCRIPTION LOG</span>
+        </div>
+
+        <!-- History section -->
+        <div class="history-section">
+          <div class="search-container">
+            <div class="search-icon">◈</div>
+            <input type="text" class="lcars-search" id="search-input" placeholder="SEARCH RECORDS...">
+          </div>
+          <div class="history-list" id="history-list">
+            <!-- History items will be rendered dynamically -->
+          </div>
+        </div>
+
+        <!-- Meeting Log section (visible only in Meeting mode) -->
+        <div class="section-divider meeting-divider" style="display: none;">
+          <span class="divider-label">MEETING LOG</span>
+        </div>
+        <div class="meeting-section" style="display: none;">
+          <div class="history-list" id="meeting-list">
+            <!-- Meeting items will be rendered dynamically -->
+          </div>
+        </div>
+      </div>
+
+      <!-- Right Accent Strip -->
+      <div class="lcars-right">
+        <div class="accent-strip top"></div>
+        <div class="accent-spacer"></div>
+        <div class="accent-strip mid purple"></div>
+      </div>
+    </div>
+
+    <!-- Bottom Bar -->
+    <div class="lcars-footer">
+      <div class="footer-segment version">
+        <span class="footer-info">LCARS v<span id="app-version">0.0.0</span></span>
+      </div>
+      <div class="footer-gap"></div>
+      <div class="footer-segment mode-selector" id="mode-selector">
+        <button class="mode-btn" id="mode-btn">
+          <span class="mode-label">MODE:</span>
+          <span class="mode-value" id="mode-value">VOICE NOTE</span>
+          <span class="mode-arrow">▾</span>
+        </button>
+        <div class="mode-dropdown" id="mode-dropdown">
+          <button class="mode-option" data-mode="VoiceNote">VOICE NOTE</button>
+          <button class="mode-option" data-mode="Meeting">MEETING</button>
+        </div>
+      </div>
+      <div class="footer-gap"></div>
+      <div class="footer-segment model-selector" id="model-selector">
+        <button class="model-btn" id="model-btn">
+          <span class="model-label">WHISPER:</span>
+          <span class="model-value" id="model-value">BASE</span>
+          <span class="model-arrow">▾</span>
+        </button>
+        <div class="model-dropdown" id="model-dropdown">
+          <button class="model-option" data-model="base">BASE</button>
+          <button class="model-option" data-model="small">SMALL</button>
+          <button class="model-option" data-model="medium">MEDIUM</button>
+          <button class="model-option" data-model="large">LARGE</button>
+        </div>
+      </div>
+      <div class="footer-gap"></div>
+    </div>
+  </div>
+
+  <script src="app.js"></script>
+</body>
+</html>

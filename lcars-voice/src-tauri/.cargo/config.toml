@@ -1,0 +1,3 @@
+[env]
+# Required for system tray on Linux with libayatana-appindicator
+TAURI_LINUX_AYATANA_APPINDICATOR = "1"

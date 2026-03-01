@@ -1,0 +1,101 @@
+name: lcars-voice Release
+
+on:
+  push:
+    tags:
+      - 'lcars-voice-v*'
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: write
+    strategy:
+      fail-fast: false
+      matrix:
+        variant: [cpu, cuda]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            libappindicator3-dev \
+            libayatana-appindicator3-dev \
+            librsvg2-dev \
+            patchelf \
+            libssl-dev \
+            libgtk-3-dev \
+            libasound2-dev
+
+      - name: Install CUDA toolkit
+        if: matrix.variant == 'cuda'
+        run: |
+          wget https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2204/x86_64/cuda-keyring_1.1-1_all.deb
+          sudo dpkg -i cuda-keyring_1.1-1_all.deb
+          sudo apt-get update
+          sudo apt-get install -y cuda-toolkit-12-4
+          echo "/usr/local/cuda-12.4/bin" >> $GITHUB_PATH
+          echo "LD_LIBRARY_PATH=/usr/local/cuda-12.4/lib64:$LD_LIBRARY_PATH" >> $GITHUB_ENV
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Rust cache
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: 'lcars-voice/src-tauri -> target'
+          prefix-key: lcars-voice-${{ matrix.variant }}
+
+      - name: Install Tauri CLI
+        run: cargo install tauri-cli --version "^2"
+
+      - name: Build (CPU)
+        if: matrix.variant == 'cpu'
+        working-directory: lcars-voice/src-tauri
+        run: cargo tauri build
+
+      - name: Build (CUDA)
+        if: matrix.variant == 'cuda'
+        working-directory: lcars-voice/src-tauri
+        run: cargo tauri build -- --features cuda
+
+      - name: Get version
+        id: version
+        run: echo "version=$(jq -r .version lcars-voice/src-tauri/tauri.conf.json)" >> $GITHUB_OUTPUT
+
+      - name: Rename artifacts with variant suffix
+        run: |
+          VARIANT=${{ matrix.variant }}
+          DEB_DIR="lcars-voice/src-tauri/target/release/bundle/deb"
+          AI_DIR="lcars-voice/src-tauri/target/release/bundle/appimage"
+
+          for f in "$DEB_DIR"/*.deb; do
+            [ -f "$f" ] || continue
+            base=$(basename "$f" .deb)
+            mv "$f" "$DEB_DIR/${base}-${VARIANT}.deb"
+          done
+
+          for f in "$AI_DIR"/*.AppImage; do
+            [ -f "$f" ] || continue
+            base=$(basename "$f" .AppImage)
+            mv "$f" "$AI_DIR/${base}-${VARIANT}.AppImage"
+          done
+
+      - name: Upload to GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            lcars-voice/src-tauri/target/release/bundle/deb/*-${{ matrix.variant }}.deb
+            lcars-voice/src-tauri/target/release/bundle/appimage/*-${{ matrix.variant }}.AppImage
+          tag_name: ${{ github.ref_name }}
+          draft: false
+          prerelease: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
