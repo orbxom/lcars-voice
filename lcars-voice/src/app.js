@@ -337,7 +337,7 @@ class LCARSVoiceInterface {
       console.log(`[LCARS] event: Meeting transcription progress: stage=${stage}, percent=${percent}`);
       this.meetingTranscriptionProgress = { stage, percent: percent ?? 0 };
       this.updateTranscriptionProgress();
-      if (this.isTranscribing && percent != null) {
+      if (this.isTranscribing && percent != null && percent > 0) {
         this.elements.statusText.textContent =
           stage === 'diarizing' ? `DIARIZING ${percent}%` : `TRANSCRIBING ${percent}%`;
       }
