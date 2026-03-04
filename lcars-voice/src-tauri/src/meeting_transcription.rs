@@ -24,12 +24,35 @@ pub struct SpeakerTurn {
 }
 
 /// Embedded Python script for running pyannote speaker diarization.
+///
+/// Includes a ProgressHook that writes JSON progress messages to stderr,
+/// allowing the Rust side to parse and emit real-time progress events.
 const DIARIZE_SCRIPT: &str = r#"
-import json, sys, os
+import json, sys, os, torch
+
+class ProgressHook:
+    def __enter__(self):
+        return self
+    def __exit__(self, *args):
+        pass
+    def __call__(self, step_name, step_artifact=None, file=None,
+                 total=None, completed=None):
+        msg = {"step": step_name}
+        if total is not None and completed is not None:
+            msg["completed"] = completed
+            msg["total"] = total
+        print(json.dumps(msg), file=sys.stderr, flush=True)
+
 from pyannote.audio import Pipeline
-pipeline = Pipeline.from_pretrained("pyannote/speaker-diarization-3.1", token=os.environ.get("HF_TOKEN"))
-result = pipeline(sys.argv[1])
-turns = [{"start": t.start, "end": t.end, "speaker": s} for t, _, s in result.itertracks(yield_label=True)]
+pipeline = Pipeline.from_pretrained(
+    "pyannote/speaker-diarization-3.1",
+    token=os.environ.get("HF_TOKEN"))
+if torch.cuda.is_available():
+    pipeline.to(torch.device("cuda"))
+with ProgressHook() as hook:
+    result = pipeline(sys.argv[1], hook=hook)
+turns = [{"start": t.start, "end": t.end, "speaker": s}
+         for t, _, s in result.itertracks(yield_label=True)]
 json.dump(turns, sys.stdout)
 "#;
 
@@ -337,12 +360,51 @@ fn resolve_python_with(python_env: Option<&str>) -> String {
     "python3".to_string()
 }
 
+/// Parse a line of diarization progress JSON from stderr.
+///
+/// The pyannote ProgressHook emits JSON like `{"step":"segmentation","completed":5,"total":20}`.
+/// Maps progress across pipeline steps to a weighted 0-100 overall percent:
+/// - segmentation: 0-40% (based on completed/total)
+/// - speaker_counting: 45% (fixed milestone)
+/// - embeddings: 45-90% (based on completed/total)
+/// - discrete_diarization: 95% (fixed milestone)
+///
+/// Returns `None` for non-JSON lines, Python warnings, empty strings, or unrecognized steps.
+pub fn parse_diarization_progress(line: &str) -> Option<i32> {
+    let v: serde_json::Value = serde_json::from_str(line).ok()?;
+    let step = v.get("step")?.as_str()?;
+
+    match step {
+        "segmentation" => {
+            let completed = v.get("completed")?.as_i64()?;
+            let total = v.get("total")?.as_i64()?;
+            if total == 0 {
+                return Some(0);
+            }
+            Some((completed * 40 / total) as i32)
+        }
+        "speaker_counting" => Some(45),
+        "embeddings" => {
+            let completed = v.get("completed")?.as_i64()?;
+            let total = v.get("total")?.as_i64()?;
+            if total == 0 {
+                return Some(45);
+            }
+            Some((45 + completed * 45 / total) as i32)
+        }
+        "discrete_diarization" => Some(95),
+        _ => None,
+    }
+}
+
 /// Run pyannote speaker diarization via a Python subprocess.
 ///
 /// Returns None if Python is not found, the script fails, or JSON parsing fails.
-pub fn run_diarization(wav_bytes: &[u8]) -> Option<Vec<SpeakerTurn>> {
-    use std::io::Write;
-    use std::process::Command;
+/// When an `app` handle is provided, emits `meeting-transcription-progress` events
+/// with `{"stage": "diarizing", "percent": N}` as the Python script reports progress.
+pub fn run_diarization(wav_bytes: &[u8], app: Option<tauri::AppHandle>) -> Option<Vec<SpeakerTurn>> {
+    use std::io::{BufRead, BufReader, Read, Write};
+    use std::process::{Command, Stdio};
 
     // Create a temp file with a timestamp-based name
     let timestamp = std::time::SystemTime::now()
@@ -369,17 +431,21 @@ pub fn run_diarization(wav_bytes: &[u8]) -> Option<Vec<SpeakerTurn>> {
     // Find Python: check PYTHON_ENV env var, fall back to system python3
     let python = resolve_python();
 
-    // Run the diarization script
+    // Run the diarization script with piped stdout/stderr for progress
     let mut cmd = Command::new(&python);
-    cmd.arg("-c").arg(DIARIZE_SCRIPT).arg(&temp_path);
+    cmd.arg("-c")
+        .arg(DIARIZE_SCRIPT)
+        .arg(&temp_path)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
 
     // Pass HF_TOKEN if set
     if let Ok(token) = std::env::var("HF_TOKEN") {
         cmd.env("HF_TOKEN", token);
     }
 
-    let output = match cmd.output() {
-        Ok(o) => o,
+    let mut child = match cmd.spawn() {
+        Ok(c) => c,
         Err(e) => {
             log::warn!(
                 "run_diarization: failed to run Python (not found at '{}' or execution error): {}",
@@ -390,21 +456,73 @@ pub fn run_diarization(wav_bytes: &[u8]) -> Option<Vec<SpeakerTurn>> {
         }
     };
 
+    // Read stderr on a separate thread for progress reporting
+    let stderr = child.stderr.take();
+    let stderr_thread = std::thread::spawn(move || {
+        let mut collected = String::new();
+        if let Some(stderr_pipe) = stderr {
+            let reader = BufReader::new(stderr_pipe);
+            for line in reader.lines() {
+                match line {
+                    Ok(line) => {
+                        if let Some(percent) = parse_diarization_progress(&line) {
+                            if let Some(ref app) = app {
+                                use tauri::Emitter;
+                                let _ = app.emit(
+                                    "meeting-transcription-progress",
+                                    serde_json::json!({"stage": "diarizing", "percent": percent}),
+                                );
+                            }
+                        }
+                        // Collect all stderr for error reporting
+                        if !collected.is_empty() {
+                            collected.push('\n');
+                        }
+                        collected.push_str(&line);
+                    }
+                    Err(e) => {
+                        log::warn!("run_diarization: error reading stderr: {}", e);
+                    }
+                }
+            }
+        }
+        collected
+    });
+
+    // Read stdout (JSON result)
+    let mut stdout_data = String::new();
+    if let Some(mut stdout_pipe) = child.stdout.take() {
+        if let Err(e) = stdout_pipe.read_to_string(&mut stdout_data) {
+            log::warn!("run_diarization: error reading stdout: {}", e);
+        }
+    }
+
+    // Wait for child to exit
+    let status = match child.wait() {
+        Ok(s) => s,
+        Err(e) => {
+            log::warn!("run_diarization: failed to wait for child: {}", e);
+            let _ = std::fs::remove_file(&temp_path);
+            return None;
+        }
+    };
+
+    // Collect stderr from the thread
+    let stderr_output = stderr_thread.join().unwrap_or_default();
+
     // Clean up temp file
     let _ = std::fs::remove_file(&temp_path);
 
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
+    if !status.success() {
         log::warn!(
             "run_diarization: Python script failed (exit {}): {}",
-            output.status, stderr
+            status, stderr_output
         );
         return None;
     }
 
     // Parse stdout as JSON array of SpeakerTurn
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    match serde_json::from_str::<Vec<SpeakerTurn>>(&stdout) {
+    match serde_json::from_str::<Vec<SpeakerTurn>>(&stdout_data) {
         Ok(turns) => {
             log::info!(
                 "run_diarization: found {} speaker turns",
@@ -766,5 +884,75 @@ mod tests {
         assert_eq!(segments[1].speaker.as_deref(), Some("Speaker 2"));
         // Third segment has no overlap, should get previous speaker
         assert_eq!(segments[2].speaker.as_deref(), Some("Speaker 2"));
+    }
+
+    // ===============================================================
+    // Diarization progress parsing tests
+    // ===============================================================
+
+    #[test]
+    fn test_parse_diarization_progress_segmentation() {
+        let line = r#"{"step":"segmentation","completed":5,"total":20}"#;
+        assert_eq!(parse_diarization_progress(line), Some(10)); // 5*40/20 = 10%
+    }
+
+    #[test]
+    fn test_parse_diarization_progress_segmentation_zero() {
+        let line = r#"{"step":"segmentation","completed":0,"total":20}"#;
+        assert_eq!(parse_diarization_progress(line), Some(0)); // 0*40/20 = 0%
+    }
+
+    #[test]
+    fn test_parse_diarization_progress_segmentation_complete() {
+        let line = r#"{"step":"segmentation","completed":20,"total":20}"#;
+        assert_eq!(parse_diarization_progress(line), Some(40)); // 20*40/20 = 40%
+    }
+
+    #[test]
+    fn test_parse_diarization_progress_speaker_counting() {
+        let line = r#"{"step":"speaker_counting"}"#;
+        assert_eq!(parse_diarization_progress(line), Some(45));
+    }
+
+    #[test]
+    fn test_parse_diarization_progress_embeddings() {
+        let line = r#"{"step":"embeddings","completed":3,"total":10}"#;
+        assert_eq!(parse_diarization_progress(line), Some(58)); // 45 + 3*45/10 = 58%
+    }
+
+    #[test]
+    fn test_parse_diarization_progress_embeddings_complete() {
+        let line = r#"{"step":"embeddings","completed":10,"total":10}"#;
+        assert_eq!(parse_diarization_progress(line), Some(90)); // 45 + 10*45/10 = 90%
+    }
+
+    #[test]
+    fn test_parse_diarization_progress_discrete_diarization() {
+        let line = r#"{"step":"discrete_diarization"}"#;
+        assert_eq!(parse_diarization_progress(line), Some(95));
+    }
+
+    #[test]
+    fn test_parse_diarization_progress_non_json() {
+        assert_eq!(parse_diarization_progress("some random text"), None);
+    }
+
+    #[test]
+    fn test_parse_diarization_progress_python_warning() {
+        assert_eq!(
+            parse_diarization_progress("/usr/lib/python3/dist-packages/foo.py:42: UserWarning: blah"),
+            None
+        );
+    }
+
+    #[test]
+    fn test_parse_diarization_progress_empty() {
+        assert_eq!(parse_diarization_progress(""), None);
+    }
+
+    #[test]
+    fn test_parse_diarization_progress_unrecognized_step() {
+        let line = r#"{"step":"unknown_step","completed":1,"total":5}"#;
+        assert_eq!(parse_diarization_progress(line), None);
     }
 }
