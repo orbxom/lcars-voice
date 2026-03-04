@@ -133,8 +133,17 @@ class LCARSVoiceInterface {
       }
     });
 
-    // Event delegation for history list copy buttons
+    // Event delegation for history list buttons (redo + copy)
     this.elements.historyList.addEventListener('click', async (e) => {
+      const redoBtn = e.target.closest('.redo-btn');
+      if (redoBtn) {
+        const historyItem = redoBtn.closest('.history-item');
+        if (!historyItem) return;
+        const id = parseInt(historyItem.dataset.id, 10);
+        this.redoTranscription(id, historyItem);
+        return;
+      }
+
       const copyBtn = e.target.closest('.copy-btn');
       if (!copyBtn) return;
       const historyItem = copyBtn.closest('.history-item');
@@ -314,13 +323,23 @@ class LCARSVoiceInterface {
       this.showDownloadProgress(model, percent);
     });
 
+    listen('redo-transcription-complete', async (event) => {
+      const { id, text } = event.payload;
+      const entry = this.history.find(h => h.id === id);
+      if (entry) {
+        entry.text = text;
+        this.renderHistory();
+      }
+    });
+
     listen('meeting-transcription-progress', (event) => {
       const { stage, percent } = event.payload;
       console.log(`[LCARS] event: Meeting transcription progress: stage=${stage}, percent=${percent}`);
       this.meetingTranscriptionProgress = { stage, percent: percent ?? 0 };
       this.updateTranscriptionProgress();
       if (this.isTranscribing && percent != null) {
-        this.elements.statusText.textContent = `TRANSCRIBING ${percent}%`;
+        this.elements.statusText.textContent =
+          stage === 'diarizing' ? `DIARIZING ${percent}%` : `TRANSCRIBING ${percent}%`;
       }
     });
   }
@@ -341,7 +360,7 @@ class LCARSVoiceInterface {
       if (stage === 'transcribing' && typeof percent === 'number') {
         btn.textContent = `TRANSCRIBING ${percent}%`;
       } else if (stage === 'diarizing') {
-        btn.textContent = 'DIARIZING...';
+        btn.textContent = typeof percent === 'number' && percent > 0 ? `DIARIZING ${percent}%` : 'DIARIZING...';
       } else {
         btn.textContent = 'PROCESSING...';
       }
@@ -758,7 +777,7 @@ class LCARSVoiceInterface {
       this.transcribeAnimationId = requestAnimationFrame(draw);
 
       const progress = this.meetingTranscriptionProgress;
-      const hasProgress = progress.stage === 'transcribing' && typeof progress.percent === 'number';
+      const hasProgress = (progress.stage === 'transcribing' || progress.stage === 'diarizing') && typeof progress.percent === 'number';
 
       // Fade everything toward black
       ctx.fillStyle = 'rgba(0, 0, 0, 0.08)';
@@ -892,12 +911,17 @@ class LCARSVoiceInterface {
       const escapedText = escapeHtml(entry.text);
       const escapedTruncated = escapeHtml(truncated);
 
+      const redoBtn = entry.has_audio
+        ? '<button class="redo-btn" title="Re-transcribe">&#x21BB;</button>'
+        : '';
+
       return `
         <div class="history-item" data-id="${entry.id}" data-text="${escapedText}">
           <div class="item-content">
             <span class="item-text">${escapedTruncated}</span>
             <span class="item-time">${time}</span>
           </div>
+          ${redoBtn}
           <button class="copy-btn" title="Copy to clipboard">&#x29C9;</button>
         </div>
       `;
@@ -942,7 +966,7 @@ class LCARSVoiceInterface {
         if (progress.stage === 'transcribing' && typeof progress.percent === 'number') {
           label = `TRANSCRIBING ${progress.percent}%`;
         } else if (progress.stage === 'diarizing') {
-          label = 'DIARIZING...';
+          label = typeof progress.percent === 'number' && progress.percent > 0 ? `DIARIZING ${progress.percent}%` : 'DIARIZING...';
         }
         actionBtn = `<button class="meeting-action-btn processing" disabled>${label}</button>`;
       } else if (entry.transcript) {
@@ -1043,6 +1067,56 @@ class LCARSVoiceInterface {
       }
     });
     input.addEventListener('blur', () => save());
+  }
+
+  async redoTranscription(id, historyItemEl) {
+    const redoBtn = historyItemEl.querySelector('.redo-btn');
+    if (redoBtn) {
+      redoBtn.disabled = true;
+      redoBtn.classList.add('processing');
+      redoBtn.textContent = '...';
+    }
+
+    // Enter transcribing UI state
+    this.isTranscribing = true;
+    this.meetingTranscriptionProgress = { stage: 'transcribing', percent: 0 };
+    this.stopWaveformAnimation();
+    this.updateUI(UI_STATE.TRANSCRIBING);
+    this.startTranscribingAnimation();
+
+    try {
+      const newText = await window.__TAURI__.core.invoke('redo_transcription', { id });
+      const entry = this.history.find(h => h.id === id);
+      if (entry) {
+        entry.text = newText;
+      }
+
+      // Exit transcribing UI state
+      this.meetingTranscriptionProgress = { stage: null, percent: 0 };
+      this.isTranscribing = false;
+      this.stopTranscribingAnimation();
+      this.updateUI(UI_STATE.READY);
+      this.startIdleWaveform();
+
+      this.renderHistory();
+      this.flashStatus('RE-TRANSCRIBED');
+    } catch (err) {
+      console.error('Failed to redo transcription:', err);
+
+      // Exit transcribing UI state on error
+      this.meetingTranscriptionProgress = { stage: null, percent: 0 };
+      this.isTranscribing = false;
+      this.stopTranscribingAnimation();
+      this.updateUI(UI_STATE.READY);
+      this.startIdleWaveform();
+
+      this.flashStatus('ERROR: REDO FAILED');
+      if (redoBtn) {
+        redoBtn.disabled = false;
+        redoBtn.classList.remove('processing');
+        redoBtn.textContent = '\u21BB';
+      }
+    }
   }
 
   async loadCurrentModel() {
