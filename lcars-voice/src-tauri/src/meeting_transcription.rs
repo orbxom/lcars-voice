@@ -381,7 +381,7 @@ pub fn parse_diarization_progress(line: &str) -> Option<i32> {
             if total == 0 {
                 return Some(0);
             }
-            Some((completed * 40 / total) as i32)
+            Some(((completed * 40 / total) as i32).min(40))
         }
         "speaker_counting" => Some(45),
         "embeddings" => {
@@ -390,7 +390,7 @@ pub fn parse_diarization_progress(line: &str) -> Option<i32> {
             if total == 0 {
                 return Some(45);
             }
-            Some((45 + completed * 45 / total) as i32)
+            Some(((45 + completed * 45 / total) as i32).min(90))
         }
         "discrete_diarization" => Some(95),
         _ => None,
@@ -466,6 +466,7 @@ pub fn run_diarization(wav_bytes: &[u8], app: Option<tauri::AppHandle>) -> Optio
                 match line {
                     Ok(line) => {
                         if let Some(percent) = parse_diarization_progress(&line) {
+                            log::debug!("diarization progress: {}%", percent);
                             if let Some(ref app) = app {
                                 use tauri::Emitter;
                                 let _ = app.emit(
@@ -954,5 +955,17 @@ mod tests {
     fn test_parse_diarization_progress_unrecognized_step() {
         let line = r#"{"step":"unknown_step","completed":1,"total":5}"#;
         assert_eq!(parse_diarization_progress(line), None);
+    }
+
+    #[test]
+    fn test_parse_diarization_progress_segmentation_zero_total() {
+        let line = r#"{"step":"segmentation","completed":0,"total":0}"#;
+        assert_eq!(parse_diarization_progress(line), Some(0));
+    }
+
+    #[test]
+    fn test_parse_diarization_progress_embeddings_zero_total() {
+        let line = r#"{"step":"embeddings","completed":0,"total":0}"#;
+        assert_eq!(parse_diarization_progress(line), Some(45));
     }
 }
