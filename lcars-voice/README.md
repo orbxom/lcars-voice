@@ -57,10 +57,15 @@ cargo tauri build    # production (.deb and .AppImage)
 
 Requires: Rust, Node.js, and system dependencies:
 ```bash
-sudo apt install xclip libnotify-bin libwebkit2gtk-4.1-dev libayatana-appindicator3-dev
+sudo apt install xclip libnotify-bin \
+  libwebkit2gtk-4.1-dev libayatana-appindicator3-dev \
+  librsvg2-dev patchelf libssl-dev libgtk-3-dev libasound2-dev \
+  libclang-dev cmake
 ```
 
-For CUDA builds, install the CUDA toolkit. For CPU-only: `cargo tauri build --no-default-features`.
+For CPU-only builds: `cargo tauri build -- --no-default-features`
+
+For CUDA builds, install the CUDA toolkit first, then: `cargo tauri build`
 
 ## Usage
 
