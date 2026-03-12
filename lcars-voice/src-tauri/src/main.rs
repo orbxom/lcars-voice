@@ -589,9 +589,19 @@ async fn transcribe_meeting(app: tauri::AppHandle, id: i64) -> Result<String, St
             serde_json::json!({"stage": "diarizing", "percent": null}));
 
         // 8. Try speaker diarization (graceful fallback if unavailable)
-        if let Some(turns) = meeting_transcription::run_diarization(&wav_bytes, Some(app_clone.clone())) {
-            meeting_transcription::assign_speakers(&mut segments, &turns);
-            segments = meeting_transcription::merge_consecutive_speakers(segments);
+        match meeting_transcription::run_diarization(&wav_bytes, Some(app_clone.clone())) {
+            Ok(turns) => {
+                meeting_transcription::assign_speakers(&mut segments, &turns);
+                segments = meeting_transcription::merge_consecutive_speakers(segments);
+            }
+            Err(e) => {
+                log::warn!("Diarization failed: {}", e);
+                let _ = app_clone.emit("meeting-transcription-progress",
+                    serde_json::json!({
+                        "stage": "diarization_skipped",
+                        "warning": e.to_string()
+                    }));
+            }
         }
 
         // 9. Format transcript

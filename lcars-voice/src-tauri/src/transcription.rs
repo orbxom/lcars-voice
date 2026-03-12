@@ -2,10 +2,35 @@
 
 use whisper_rs::{FullParams, SamplingStrategy, WhisperContext};
 
+/// 5 minutes of audio at 16kHz mono.
+pub const CHUNK_SIZE: usize = 16000 * 60 * 5;
+/// 1 second overlap between consecutive chunks.
+pub const CHUNK_OVERLAP: usize = 16000;
+/// Audio longer than this threshold is chunked.
+pub const CHUNK_THRESHOLD: usize = CHUNK_SIZE;
+
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct TranscriptionResult {
     pub text: String,
     pub language: String,
+}
+
+/// Splits audio into overlapping chunks for transcription.
+///
+/// Returns a vector of (start, end) sample index pairs. Consecutive chunks
+/// overlap by `overlap` samples so that words at chunk boundaries are captured.
+pub fn compute_chunks(total_len: usize, chunk_size: usize, overlap: usize) -> Vec<(usize, usize)> {
+    let mut chunks = Vec::new();
+    let mut start = 0;
+    while start < total_len {
+        let end = (start + chunk_size).min(total_len);
+        chunks.push((start, end));
+        if end == total_len {
+            break;
+        }
+        start = end.saturating_sub(overlap);
+    }
+    chunks
 }
 
 /// Build common Whisper FullParams with anti-hallucination settings.
@@ -48,23 +73,16 @@ pub fn build_whisper_params(max_tokens: i32, app: Option<tauri::AppHandle>) -> F
     params
 }
 
-/// Transcribes audio data using a pre-loaded WhisperContext.
+/// Transcribes a single chunk of audio using a pre-loaded WhisperContext.
 ///
-/// `audio_data` must be f32 PCM samples at 16kHz mono.
-/// If `app` is provided, emits `meeting-transcription-progress` events with percent updates.
-pub fn transcribe(
+/// This contains the core whisper inference logic extracted from `transcribe()`.
+fn transcribe_single(
     ctx: &WhisperContext,
     audio_data: &[f32],
-    model_name: &str,
+    max_tokens: i32,
     app: Option<tauri::AppHandle>,
 ) -> Result<TranscriptionResult, String> {
-    log::info!(
-        "transcription: model={}, samples={}",
-        model_name,
-        audio_data.len()
-    );
-
-    let params = build_whisper_params(100, app);
+    let params = build_whisper_params(max_tokens, app);
 
     let mut state = ctx
         .create_state()
@@ -95,12 +113,80 @@ pub fn transcribe(
 
     let text = detect_and_remove_repetitions(&text).trim().to_string();
 
-    log::info!("transcription: Success, {} chars", text.len());
+    log::info!("transcription: chunk done, {} chars", text.len());
 
     Ok(TranscriptionResult {
         text,
         language: "en".to_string(),
     })
+}
+
+/// Transcribes audio, chunking long recordings to prevent whisper hallucination.
+///
+/// If `audio_data` is shorter than `CHUNK_THRESHOLD`, delegates directly to
+/// `transcribe_single`. Otherwise splits the audio into overlapping chunks,
+/// transcribes each independently, joins the results, and runs repetition
+/// detection on the combined text.
+pub fn transcribe_chunked(
+    ctx: &WhisperContext,
+    audio_data: &[f32],
+    _model_name: &str,
+    max_tokens: i32,
+    app: Option<tauri::AppHandle>,
+) -> Result<TranscriptionResult, String> {
+    if audio_data.len() <= CHUNK_THRESHOLD {
+        return transcribe_single(ctx, audio_data, max_tokens, app);
+    }
+
+    let chunks = compute_chunks(audio_data.len(), CHUNK_SIZE, CHUNK_OVERLAP);
+    log::info!(
+        "transcription: chunking {} samples into {} chunks",
+        audio_data.len(),
+        chunks.len()
+    );
+
+    let mut texts = Vec::new();
+    for (i, (start, end)) in chunks.iter().enumerate() {
+        log::info!(
+            "transcription: chunk {}/{} (samples {}..{})",
+            i + 1,
+            chunks.len(),
+            start,
+            end
+        );
+        let chunk_audio = &audio_data[*start..*end];
+        let result = transcribe_single(ctx, chunk_audio, max_tokens, app.clone())?;
+        texts.push(result.text);
+    }
+
+    let combined = texts.join(" ");
+    let text = detect_and_remove_repetitions(&combined).trim().to_string();
+
+    log::info!("transcription: all chunks done, {} chars combined", text.len());
+
+    Ok(TranscriptionResult {
+        text,
+        language: "en".to_string(),
+    })
+}
+
+/// Transcribes audio data using a pre-loaded WhisperContext.
+///
+/// `audio_data` must be f32 PCM samples at 16kHz mono.
+/// If `app` is provided, emits `meeting-transcription-progress` events with percent updates.
+/// Long audio (>5 minutes) is automatically chunked to prevent whisper hallucination.
+pub fn transcribe(
+    ctx: &WhisperContext,
+    audio_data: &[f32],
+    model_name: &str,
+    app: Option<tauri::AppHandle>,
+) -> Result<TranscriptionResult, String> {
+    log::info!(
+        "transcription: model={}, samples={}",
+        model_name,
+        audio_data.len()
+    );
+    transcribe_chunked(ctx, audio_data, model_name, 100, app)
 }
 
 /// Detects and removes repetitive phrases from transcription output.
@@ -347,6 +433,63 @@ mod tests {
             "Should complete in under 1 second, took {:?}",
             elapsed
         );
+    }
+
+    #[test]
+    fn test_compute_chunks_short_audio() {
+        // Audio shorter than chunk size = 1 chunk
+        let chunks = compute_chunks(100_000, CHUNK_SIZE, CHUNK_OVERLAP);
+        assert_eq!(chunks, vec![(0, 100_000)]);
+    }
+
+    #[test]
+    fn test_compute_chunks_exact_chunk_size() {
+        // Audio exactly equal to chunk size = 1 chunk
+        let chunks = compute_chunks(CHUNK_SIZE, CHUNK_SIZE, CHUNK_OVERLAP);
+        assert_eq!(chunks, vec![(0, CHUNK_SIZE)]);
+    }
+
+    #[test]
+    fn test_compute_chunks_two_chunks() {
+        // 6M samples with 4.8M chunk and 16K overlap => 2 chunks
+        let total = 6_000_000;
+        let chunks = compute_chunks(total, CHUNK_SIZE, CHUNK_OVERLAP);
+        assert_eq!(chunks.len(), 2);
+        assert_eq!(chunks[0].0, 0);
+        assert_eq!(chunks[0].1, CHUNK_SIZE);
+        assert_eq!(chunks[1].1, total);
+    }
+
+    #[test]
+    fn test_compute_chunks_three_chunks() {
+        // 12M samples => should produce 3 chunks
+        let total = 12_000_000;
+        let chunks = compute_chunks(total, CHUNK_SIZE, CHUNK_OVERLAP);
+        assert_eq!(chunks.len(), 3);
+        assert_eq!(chunks[0].0, 0);
+        assert_eq!(chunks.last().unwrap().1, total);
+    }
+
+    #[test]
+    fn test_compute_chunks_overlap_coverage() {
+        // Verify consecutive chunks overlap by exactly CHUNK_OVERLAP samples
+        let total = 12_000_000;
+        let chunks = compute_chunks(total, CHUNK_SIZE, CHUNK_OVERLAP);
+        for window in chunks.windows(2) {
+            let (_, end_a) = window[0];
+            let (start_b, _) = window[1];
+            assert!(start_b < end_a, "Chunks should overlap");
+            assert_eq!(end_a - start_b, CHUNK_OVERLAP, "Overlap should be exactly CHUNK_OVERLAP");
+        }
+    }
+
+    #[test]
+    fn test_compute_chunks_covers_all_audio() {
+        // First chunk starts at 0, last chunk ends at total
+        let total = 10_000_000;
+        let chunks = compute_chunks(total, CHUNK_SIZE, CHUNK_OVERLAP);
+        assert_eq!(chunks.first().unwrap().0, 0);
+        assert_eq!(chunks.last().unwrap().1, total);
     }
 
     #[test]

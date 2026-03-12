@@ -662,6 +662,39 @@ body {
   transform: scale(1.1);
 }
 
+.redo-btn {
+  width: 28px;
+  height: 28px;
+  border: none;
+  border-radius: 6px;
+  background: var(--lcars-purple);
+  color: var(--lcars-black);
+  font-size: 16px;
+  cursor: pointer;
+  opacity: 0;
+  transition: all 0.15s ease;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.history-item:hover .redo-btn {
+  opacity: 1;
+}
+
+.redo-btn:hover {
+  background: var(--lcars-orange);
+  transform: scale(1.1);
+}
+
+.redo-btn.processing {
+  opacity: 1;
+  background: var(--lcars-purple);
+  cursor: default;
+  font-size: 10px;
+  letter-spacing: 0.5px;
+}
+
 /* ============================================
    RIGHT ACCENT STRIP
    ============================================ */
@@ -1022,6 +1055,16 @@ body {
 
 .meeting-action-btn.copy-transcript-btn:hover {
   background: var(--lcars-blue);
+  color: var(--lcars-black);
+}
+
+.meeting-action-btn.retranscribe-btn {
+  border-color: var(--lcars-purple);
+  color: var(--lcars-purple);
+}
+
+.meeting-action-btn.retranscribe-btn:hover {
+  background: var(--lcars-purple);
   color: var(--lcars-black);
 }
 

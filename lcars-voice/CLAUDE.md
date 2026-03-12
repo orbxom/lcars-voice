@@ -48,7 +48,7 @@ Scripts (scripts/)
 └── lcars-launch.sh        # Launch script for desktop entry
 ```
 
-**Voice note flow**: User triggers recording -> cpal captures audio to buffer -> User stops -> audio downmixed to mono, resampled to 16KHz -> whisper-rs transcribes -> Result copied to clipboard + saved to SQLite history.
+**Voice note flow**: User triggers recording -> cpal captures audio to buffer -> User stops -> audio downmixed to mono, resampled to 16KHz -> WAV BLOB saved to SQLite `transcriptions.audio_data` -> whisper-rs transcribes (chunked for recordings > 5 min: split into 5-min segments with 1-sec overlap, each transcribed independently, results concatenated) -> Result copied to clipboard + text saved to SQLite history. Users can re-transcribe any voice note that has stored audio via the redo button in the transcription log.
 
 **Meeting flow**: User starts meeting recording -> cpal captures audio -> User stops -> audio encoded to 16KHz mono WAV via hound -> WAV stored as BLOB in SQLite `meetings` table -> User can later trigger transcription -> whisper-rs transcribes segments -> optional pyannote diarization assigns speakers -> hallucination filtering and segment merging -> formatted transcript saved to meeting record.
 
@@ -65,6 +65,7 @@ Scripts (scripts/)
 - `get_meeting_history` (list meeting recordings from database)
 - `rename_meeting` (rename a meeting recording)
 - `transcribe_meeting` (run full transcription pipeline on a stored meeting)
+- `redo_transcription` (re-transcribe a voice note from stored audio; only works for entries with `audio_data`)
 
 **Global hotkey**: Super+Alt+H toggles recording on/off.
 
@@ -85,7 +86,7 @@ Scripts (scripts/)
 - No build tooling - vanilla JS/HTML/CSS
 - Antonio font self-hosted in `src/fonts/`
 - LCARS color palette: Orange (#FF9900), Purple (#CC99CC), Blue (#9999FF), Tan (#FFCC99)
-- Tauri events: `recording-started`, `transcribing`, `transcription-complete`, `transcription-error`, `model-download-progress`, `meeting-saved`, `meeting-transcription-progress`, `meeting-transcription-complete`
+- Tauri events: `recording-started`, `transcribing`, `transcription-complete`, `transcription-error`, `model-download-progress`, `meeting-saved`, `meeting-transcription-progress`, `meeting-transcription-complete`, `redo-transcription-complete`
 - Logging: Uses `log` + `fern` crates for dual output (stderr with `[LCARS]` prefix + daily log file). Levels: error/warn/info/debug.
 
 ## Dependencies

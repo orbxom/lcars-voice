@@ -23,6 +23,47 @@ pub struct SpeakerTurn {
     pub speaker: String,
 }
 
+/// Reason diarization failed — used to display actionable messages to the user.
+#[derive(Debug, Clone)]
+pub enum DiarizeError {
+    /// Could not create or write the temp WAV file.
+    TempFile(String),
+    /// Python interpreter not found (spawn failed).
+    PythonNotFound(String),
+    /// Python script exited non-zero. Contains classified reason + raw stderr.
+    ScriptFailed {
+        reason: String,
+        #[allow(dead_code)]
+        stderr: String,
+    },
+    /// Script succeeded but output was not valid JSON.
+    InvalidOutput(String),
+}
+
+impl std::fmt::Display for DiarizeError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            DiarizeError::TempFile(e) => write!(f, "Failed to create temp file: {}", e),
+            DiarizeError::PythonNotFound(e) => write!(f, "Python not found: {}", e),
+            DiarizeError::ScriptFailed { reason, .. } => write!(f, "{}", reason),
+            DiarizeError::InvalidOutput(e) => write!(f, "Invalid diarization output: {}", e),
+        }
+    }
+}
+
+/// Classify Python stderr into a user-friendly error reason.
+fn classify_diarization_error(stderr: &str) -> String {
+    if stderr.contains("No module named 'pyannote'") || stderr.contains("No module named 'torch'") {
+        "pyannote.audio is not installed. Install with: pip install pyannote.audio".into()
+    } else if stderr.contains("HF_TOKEN") || (stderr.contains("token") && stderr.contains("401")) {
+        "HF_TOKEN is missing or invalid. Set the HF_TOKEN environment variable.".into()
+    } else if stderr.contains("gated repo") || stderr.contains("Access to model") {
+        "Access denied to pyannote model. Accept the license at huggingface.co/pyannote/speaker-diarization-3.1 and set HF_TOKEN.".into()
+    } else {
+        "Diarization script failed. Check logs for details.".into()
+    }
+}
+
 /// Embedded Python script for running pyannote speaker diarization.
 ///
 /// Includes a ProgressHook that writes JSON progress messages to stderr,
@@ -39,8 +80,8 @@ class ProgressHook:
                  total=None, completed=None):
         msg = {"step": step_name}
         if total is not None and completed is not None:
-            msg["completed"] = completed
-            msg["total"] = total
+            msg["completed"] = int(completed)
+            msg["total"] = int(total)
         print(json.dumps(msg), file=sys.stderr, flush=True)
 
 from pyannote.audio import Pipeline
@@ -51,6 +92,10 @@ if torch.cuda.is_available():
     pipeline.to(torch.device("cuda"))
 with ProgressHook() as hook:
     result = pipeline(sys.argv[1], hook=hook)
+# pyannote 4.x returns object with speaker_diarization attribute;
+# pyannote 3.x returns Annotation directly
+if hasattr(result, 'speaker_diarization'):
+    result = result.speaker_diarization
 turns = [{"start": t.start, "end": t.end, "speaker": s}
          for t, _, s in result.itertracks(yield_label=True)]
 json.dump(turns, sys.stdout)
@@ -270,19 +315,33 @@ pub fn format_transcript(segments: &[WhisperSegment]) -> String {
     }
 }
 
-/// Transcribe meeting audio using whisper-rs, returning individual segments with timing.
+/// Emit rescaled progress for chunked meeting transcription.
 ///
-/// Similar to the voice note transcription but extracts per-segment timing data
-/// and uses higher max_tokens for longer meeting recordings.
-/// When an `app` handle is provided, emits progress events during inference.
-pub fn transcribe_meeting_audio(
+/// Maps a per-chunk local percent (0-100) to a global percent across all chunks.
+pub fn emit_chunk_progress(app: &tauri::AppHandle, chunk_idx: usize, num_chunks: usize, local_percent: i32) {
+    use tauri::Emitter;
+    let global_percent = if num_chunks == 0 {
+        0
+    } else {
+        ((chunk_idx as i32 * 100 + local_percent) / num_chunks as i32).min(100)
+    };
+    let _ = app.emit(
+        "meeting-transcription-progress",
+        serde_json::json!({"stage": "transcribing", "percent": global_percent}),
+    );
+}
+
+/// Single-pass meeting transcription for short audio.
+///
+/// Processes the entire audio buffer in one whisper inference call.
+fn transcribe_meeting_audio_single(
     ctx: &whisper_rs::WhisperContext,
     audio_data: &[f32],
     model_name: &str,
     app: Option<tauri::AppHandle>,
 ) -> Result<Vec<WhisperSegment>, String> {
     log::info!(
-        "meeting_transcription: model={}, samples={}",
+        "meeting_transcription: single-pass, model={}, samples={}",
         model_name,
         audio_data.len()
     );
@@ -323,6 +382,111 @@ pub fn transcribe_meeting_audio(
         segments.len()
     );
     Ok(segments)
+}
+
+/// Transcribe meeting audio using whisper-rs, returning individual segments with timing.
+///
+/// For short audio (<= CHUNK_THRESHOLD), runs a single-pass transcription.
+/// For long audio, splits into 5-minute chunks with 1-second overlap, transcribes
+/// each independently, offsets timestamps, and deduplicates overlap segments.
+/// When an `app` handle is provided, emits rescaled progress events during inference.
+pub fn transcribe_meeting_audio(
+    ctx: &whisper_rs::WhisperContext,
+    audio_data: &[f32],
+    model_name: &str,
+    app: Option<tauri::AppHandle>,
+) -> Result<Vec<WhisperSegment>, String> {
+    log::info!(
+        "meeting_transcription: model={}, samples={}",
+        model_name,
+        audio_data.len()
+    );
+
+    if audio_data.len() <= crate::transcription::CHUNK_THRESHOLD {
+        return transcribe_meeting_audio_single(ctx, audio_data, model_name, app);
+    }
+
+    let chunks = crate::transcription::compute_chunks(
+        audio_data.len(),
+        crate::transcription::CHUNK_SIZE,
+        crate::transcription::CHUNK_OVERLAP,
+    );
+    let num_chunks = chunks.len();
+    log::info!(
+        "meeting_transcription: chunking {} samples into {} chunks",
+        audio_data.len(),
+        num_chunks
+    );
+
+    let overlap_sec = crate::transcription::CHUNK_OVERLAP as f64 / 16000.0;
+    let mut all_segments = Vec::new();
+
+    for (chunk_idx, (start, end)) in chunks.iter().enumerate() {
+        log::info!(
+            "meeting_transcription: chunk {}/{} (samples {}..{})",
+            chunk_idx + 1,
+            num_chunks,
+            start,
+            end
+        );
+
+        let chunk_audio = &audio_data[*start..*end];
+
+        // Build params with rescaled progress callback
+        let mut params = crate::transcription::build_whisper_params(500, None);
+        if let Some(ref app_handle) = app {
+            let app_cb = app_handle.clone();
+            let ci = chunk_idx;
+            let nc = num_chunks;
+            params.set_progress_callback_safe(move |local_percent: i32| {
+                emit_chunk_progress(&app_cb, ci, nc, local_percent);
+            });
+        }
+
+        let mut state = ctx
+            .create_state()
+            .map_err(|e| format!("Failed to create whisper state: {}", e))?;
+
+        state
+            .full(params, chunk_audio)
+            .map_err(|e| format!("Whisper inference failed on chunk {}: {}", chunk_idx, e))?;
+
+        let num_segments = state.full_n_segments();
+        let time_offset = *start as f64 / 16000.0;
+
+        for i in 0..num_segments {
+            if let Some(segment) = state.get_segment(i) {
+                let start_cs = segment.start_timestamp();
+                let end_cs = segment.end_timestamp();
+                let seg_start = start_cs as f64 / 100.0;
+                let seg_end = end_cs as f64 / 100.0;
+
+                // For chunks after the first, skip segments starting in the overlap zone
+                if chunk_idx > 0 && seg_start < overlap_sec {
+                    continue;
+                }
+
+                let raw_text = segment.to_str().unwrap_or_default().to_string();
+                let text = crate::transcription::detect_and_remove_repetitions(&raw_text);
+                let no_speech_prob = segment.no_speech_probability();
+
+                all_segments.push(WhisperSegment {
+                    start_sec: seg_start + time_offset,
+                    end_sec: seg_end + time_offset,
+                    text,
+                    no_speech_prob,
+                    speaker: None,
+                });
+            }
+        }
+    }
+
+    log::info!(
+        "meeting_transcription: {} total segments from {} chunks",
+        all_segments.len(),
+        num_chunks
+    );
+    Ok(all_segments)
 }
 
 /// Build the temp file path for diarization WAV files.
@@ -399,10 +563,10 @@ pub fn parse_diarization_progress(line: &str) -> Option<i32> {
 
 /// Run pyannote speaker diarization via a Python subprocess.
 ///
-/// Returns None if Python is not found, the script fails, or JSON parsing fails.
+/// Returns an error with an actionable message if diarization fails.
 /// When an `app` handle is provided, emits `meeting-transcription-progress` events
 /// with `{"stage": "diarizing", "percent": N}` as the Python script reports progress.
-pub fn run_diarization(wav_bytes: &[u8], app: Option<tauri::AppHandle>) -> Option<Vec<SpeakerTurn>> {
+pub fn run_diarization(wav_bytes: &[u8], app: Option<tauri::AppHandle>) -> Result<Vec<SpeakerTurn>, DiarizeError> {
     use std::io::{BufRead, BufReader, Read, Write};
     use std::process::{Command, Stdio};
 
@@ -418,13 +582,13 @@ pub fn run_diarization(wav_bytes: &[u8], app: Option<tauri::AppHandle>) -> Optio
         Ok(f) => f,
         Err(e) => {
             log::warn!("run_diarization: failed to create temp file: {}", e);
-            return None;
+            return Err(DiarizeError::TempFile(e.to_string()));
         }
     };
     if let Err(e) = file.write_all(wav_bytes) {
         log::warn!("run_diarization: failed to write temp file: {}", e);
         let _ = std::fs::remove_file(&temp_path);
-        return None;
+        return Err(DiarizeError::TempFile(e.to_string()));
     }
     drop(file);
 
@@ -452,7 +616,7 @@ pub fn run_diarization(wav_bytes: &[u8], app: Option<tauri::AppHandle>) -> Optio
                 python, e
             );
             let _ = std::fs::remove_file(&temp_path);
-            return None;
+            return Err(DiarizeError::PythonNotFound(format!("{}: {}", python, e)));
         }
     };
 
@@ -504,7 +668,10 @@ pub fn run_diarization(wav_bytes: &[u8], app: Option<tauri::AppHandle>) -> Optio
         Err(e) => {
             log::warn!("run_diarization: failed to wait for child: {}", e);
             let _ = std::fs::remove_file(&temp_path);
-            return None;
+            return Err(DiarizeError::ScriptFailed {
+                reason: format!("Failed to wait for Python process: {}", e),
+                stderr: String::new(),
+            });
         }
     };
 
@@ -515,11 +682,15 @@ pub fn run_diarization(wav_bytes: &[u8], app: Option<tauri::AppHandle>) -> Optio
     let _ = std::fs::remove_file(&temp_path);
 
     if !status.success() {
+        let reason = classify_diarization_error(&stderr_output);
         log::warn!(
             "run_diarization: Python script failed (exit {}): {}",
             status, stderr_output
         );
-        return None;
+        return Err(DiarizeError::ScriptFailed {
+            reason,
+            stderr: stderr_output,
+        });
     }
 
     // Parse stdout as JSON array of SpeakerTurn
@@ -529,11 +700,11 @@ pub fn run_diarization(wav_bytes: &[u8], app: Option<tauri::AppHandle>) -> Optio
                 "run_diarization: found {} speaker turns",
                 turns.len()
             );
-            Some(turns)
+            Ok(turns)
         }
         Err(e) => {
             log::warn!("run_diarization: failed to parse JSON: {}", e);
-            None
+            Err(DiarizeError::InvalidOutput(e.to_string()))
         }
     }
 }
@@ -967,5 +1138,137 @@ mod tests {
     fn test_parse_diarization_progress_embeddings_zero_total() {
         let line = r#"{"step":"embeddings","completed":0,"total":0}"#;
         assert_eq!(parse_diarization_progress(line), Some(45));
+    }
+
+    // ===============================================================
+    // Chunk progress rescaling tests
+    // ===============================================================
+
+    #[test]
+    fn test_chunk_progress_rescaling_first_chunk() {
+        // chunk 0 of 3, local 50% => global = (0*100 + 50) / 3 = 16
+        let global = (0i32 * 100 + 50) / 3;
+        assert_eq!(global, 16);
+    }
+
+    #[test]
+    fn test_chunk_progress_rescaling_middle_chunk() {
+        // chunk 1 of 3, local 50% => global = (1*100 + 50) / 3 = 50
+        let global = (1i32 * 100 + 50) / 3;
+        assert_eq!(global, 50);
+    }
+
+    #[test]
+    fn test_chunk_progress_rescaling_last_chunk_complete() {
+        // chunk 2 of 3, local 100% => global = (2*100 + 100) / 3 = 100
+        let global = ((2i32 * 100 + 100) / 3).min(100);
+        assert_eq!(global, 100);
+    }
+
+    #[test]
+    fn test_chunk_progress_rescaling_single_chunk() {
+        // chunk 0 of 1, local 75% => global = (0*100 + 75) / 1 = 75
+        let global = (0i32 * 100 + 75) / 1;
+        assert_eq!(global, 75);
+    }
+
+    // ===============================================================
+    // Overlap dedup math tests
+    // ===============================================================
+
+    #[test]
+    fn test_overlap_dedup_first_chunk_keeps_all() {
+        // chunk_idx=0: all segments should be kept regardless of start time
+        let chunk_idx = 0;
+        let overlap_sec = crate::transcription::CHUNK_OVERLAP as f64 / 16000.0;
+        let seg_start = 0.5; // within overlap zone
+
+        let should_skip = chunk_idx > 0 && seg_start < overlap_sec;
+        assert!(!should_skip, "First chunk should keep all segments");
+    }
+
+    #[test]
+    fn test_overlap_dedup_second_chunk_skips_overlap() {
+        // chunk_idx=1: segments starting before overlap_sec should be skipped
+        let chunk_idx = 1;
+        let overlap_sec = crate::transcription::CHUNK_OVERLAP as f64 / 16000.0;
+        assert!((overlap_sec - 1.0).abs() < 0.001, "Overlap should be ~1 second");
+
+        // Segment at 0.5s (within overlap zone) should be skipped
+        let seg_start = 0.5;
+        let should_skip = chunk_idx > 0 && seg_start < overlap_sec;
+        assert!(should_skip, "Segment in overlap zone should be skipped");
+
+        // Segment at 1.5s (past overlap zone) should be kept
+        let seg_start = 1.5;
+        let should_skip = chunk_idx > 0 && seg_start < overlap_sec;
+        assert!(!should_skip, "Segment past overlap zone should be kept");
+    }
+
+    #[test]
+    fn test_overlap_dedup_timestamp_offset() {
+        // chunk starting at sample 4_784_000 (after 5min - 1sec overlap)
+        let chunk_start = crate::transcription::CHUNK_SIZE - crate::transcription::CHUNK_OVERLAP;
+        let time_offset = chunk_start as f64 / 16000.0;
+
+        // A segment at local 2.0s should become time_offset + 2.0
+        let local_start = 2.0;
+        let global_start = local_start + time_offset;
+
+        // Expected: (4_800_000 - 16_000) / 16000 + 2.0 = 299.0 + 2.0 = 301.0
+        let expected = (crate::transcription::CHUNK_SIZE - crate::transcription::CHUNK_OVERLAP) as f64 / 16000.0 + 2.0;
+        assert!((global_start - expected).abs() < 0.001);
+    }
+
+    // ---------------------------------------------------------------
+    // classify_diarization_error tests
+    // ---------------------------------------------------------------
+
+    #[test]
+    fn test_classify_diarization_error_pyannote_missing() {
+        let stderr = "ModuleNotFoundError: No module named 'pyannote'";
+        assert!(classify_diarization_error(stderr).contains("pyannote.audio is not installed"));
+    }
+
+    #[test]
+    fn test_classify_diarization_error_torch_missing() {
+        let stderr = "ModuleNotFoundError: No module named 'torch'";
+        assert!(classify_diarization_error(stderr).contains("pyannote.audio is not installed"));
+    }
+
+    #[test]
+    fn test_classify_diarization_error_hf_token() {
+        let stderr = "HF_TOKEN environment variable is not set";
+        assert!(classify_diarization_error(stderr).contains("HF_TOKEN"));
+    }
+
+    #[test]
+    fn test_classify_diarization_error_gated_model() {
+        let stderr = "Access to model pyannote/speaker-diarization-3.1 is restricted";
+        assert!(classify_diarization_error(stderr).contains("Accept the license"));
+    }
+
+    #[test]
+    fn test_classify_diarization_error_unknown() {
+        let stderr = "some random error";
+        assert!(classify_diarization_error(stderr).contains("Check logs"));
+    }
+
+    #[test]
+    fn test_diarize_error_display() {
+        let e = DiarizeError::PythonNotFound("python3: No such file or directory".into());
+        assert_eq!(e.to_string(), "Python not found: python3: No such file or directory");
+
+        let e = DiarizeError::TempFile("permission denied".into());
+        assert_eq!(e.to_string(), "Failed to create temp file: permission denied");
+
+        let e = DiarizeError::ScriptFailed {
+            reason: "pyannote.audio is not installed. Install with: pip install pyannote.audio".into(),
+            stderr: "No module named 'pyannote'".into(),
+        };
+        assert_eq!(e.to_string(), "pyannote.audio is not installed. Install with: pip install pyannote.audio");
+
+        let e = DiarizeError::InvalidOutput("expected value at line 1".into());
+        assert_eq!(e.to_string(), "Invalid diarization output: expected value at line 1");
     }
 }

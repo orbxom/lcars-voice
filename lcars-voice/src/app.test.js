@@ -296,6 +296,17 @@ describe('updateTranscriptionProgress does targeted DOM update', () => {
 
     expect(btn.textContent).toBe('DIARIZING...');
   });
+
+  it('should show FINALIZING... for diarization_skipped stage', () => {
+    const btn = { textContent: 'PROCESSING...' };
+    app.elements.meetingList.querySelector = vi.fn(() => btn);
+    app.meetingTranscriptionProgress = { stage: 'diarization_skipped', percent: 0 };
+    app.transcribeAnimationId = 1;
+
+    app.updateTranscriptionProgress();
+
+    expect(btn.textContent).toBe('FINALIZING...');
+  });
 });
 
 describe('meeting-transcription-progress status text updates', () => {
@@ -336,6 +347,23 @@ describe('meeting-transcription-progress status text updates', () => {
     });
 
     expect(app.elements.statusText.textContent).toBe('TRANSCRIBING 50%');
+  });
+
+  it('should store diarizationWarning when warning field is present', () => {
+    listenCallbacks['meeting-transcription-progress']({
+      payload: { stage: 'diarization_skipped', warning: 'Python not found' },
+    });
+
+    expect(app.diarizationWarning).toBe('Python not found');
+  });
+
+  it('should not set diarizationWarning when no warning field', () => {
+    app.diarizationWarning = null;
+    listenCallbacks['meeting-transcription-progress']({
+      payload: { stage: 'diarizing', percent: 50 },
+    });
+
+    expect(app.diarizationWarning).toBeNull();
   });
 });
 
@@ -425,5 +453,38 @@ describe('redo button rendering based on has_audio', () => {
     }];
     app.renderHistory();
     expect(app.elements.historyList.innerHTML).not.toContain('redo-btn');
+  });
+});
+
+describe('meeting redo button rendering', () => {
+  let app;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    app = createTestInstance();
+    app.elements.meetingList = { innerHTML: '', addEventListener: vi.fn() };
+    app.transcribingMeetings = new Set();
+  });
+
+  it('should render REDO + COPY buttons when meeting has transcript', () => {
+    app.meetings = [{
+      id: 1, filename: 'test.wav', timestamp: '2026-03-01T12:00:00',
+      duration_ms: 60000, size_bytes: 1024 * 1024, transcript: 'Hello world',
+    }];
+    app.renderMeetingHistory();
+    expect(app.elements.meetingList.innerHTML).toContain('retranscribe-btn');
+    expect(app.elements.meetingList.innerHTML).toContain('copy-transcript-btn');
+    expect(app.elements.meetingList.innerHTML).toContain('REDO');
+    expect(app.elements.meetingList.innerHTML).toContain('COPY');
+  });
+
+  it('should render TRANSCRIBE button when meeting has no transcript', () => {
+    app.meetings = [{
+      id: 2, filename: 'test2.wav', timestamp: '2026-03-01T13:00:00',
+      duration_ms: 30000, size_bytes: 512 * 1024, transcript: null,
+    }];
+    app.renderMeetingHistory();
+    expect(app.elements.meetingList.innerHTML).toContain('transcribe-btn');
+    expect(app.elements.meetingList.innerHTML).not.toContain('retranscribe-btn');
   });
 });

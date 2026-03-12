@@ -33,6 +33,7 @@ class LCARSVoiceInterface {
     this.currentMode = 'VoiceNote';
     this.timerInterval = null;
     this.meetingTranscriptionProgress = { stage: null, percent: 0 };
+    this.diarizationWarning = null;
 
     this.elements = {
       frame: document.querySelector('.lcars-frame'),
@@ -158,8 +159,17 @@ class LCARSVoiceInterface {
       }
     });
 
-    // Meeting list action buttons (transcribe / copy)
+    // Meeting list action buttons (transcribe / redo / copy)
     this.elements.meetingList.addEventListener('click', async (e) => {
+      const retranscribeBtn = e.target.closest('.retranscribe-btn');
+      if (retranscribeBtn) {
+        const meetingItem = retranscribeBtn.closest('.meeting-item');
+        if (meetingItem) {
+          const id = parseInt(meetingItem.dataset.id, 10);
+          this.transcribeMeeting(id);
+        }
+        return;
+      }
       const transcribeBtn = e.target.closest('.transcribe-btn');
       if (transcribeBtn) {
         const meetingItem = transcribeBtn.closest('.meeting-item');
@@ -333,9 +343,13 @@ class LCARSVoiceInterface {
     });
 
     listen('meeting-transcription-progress', (event) => {
-      const { stage, percent } = event.payload;
+      const { stage, percent, warning } = event.payload;
       console.log(`[LCARS] event: Meeting transcription progress: stage=${stage}, percent=${percent}`);
       this.meetingTranscriptionProgress = { stage, percent: percent ?? 0 };
+      if (warning) {
+        this.diarizationWarning = warning;
+        console.warn(`[LCARS] Diarization skipped: ${warning}`);
+      }
       this.updateTranscriptionProgress();
       if (this.isTranscribing && percent != null && percent > 0) {
         this.elements.statusText.textContent =
@@ -361,6 +375,8 @@ class LCARSVoiceInterface {
         btn.textContent = `TRANSCRIBING ${percent}%`;
       } else if (stage === 'diarizing') {
         btn.textContent = typeof percent === 'number' && percent > 0 ? `DIARIZING ${percent}%` : 'DIARIZING...';
+      } else if (stage === 'diarization_skipped') {
+        btn.textContent = 'FINALIZING...';
       } else {
         btn.textContent = 'PROCESSING...';
       }
@@ -967,10 +983,13 @@ class LCARSVoiceInterface {
           label = `TRANSCRIBING ${progress.percent}%`;
         } else if (progress.stage === 'diarizing') {
           label = typeof progress.percent === 'number' && progress.percent > 0 ? `DIARIZING ${progress.percent}%` : 'DIARIZING...';
+        } else if (progress.stage === 'diarization_skipped') {
+          label = 'FINALIZING...';
         }
         actionBtn = `<button class="meeting-action-btn processing" disabled>${label}</button>`;
       } else if (entry.transcript) {
-        actionBtn = '<button class="meeting-action-btn copy-transcript-btn">COPY</button>';
+        actionBtn = '<button class="meeting-action-btn retranscribe-btn">REDO</button>'
+                  + '<button class="meeting-action-btn copy-transcript-btn">COPY</button>';
       } else {
         actionBtn = '<button class="meeting-action-btn transcribe-btn">TRANSCRIBE</button>';
       }
@@ -993,6 +1012,7 @@ class LCARSVoiceInterface {
 
   async transcribeMeeting(id) {
     console.log('[LCARS] app: Transcribing meeting', id);
+    this.diarizationWarning = null;
     this.transcribingMeetings.add(id);
     this.renderMeetingHistory();
 
@@ -1003,12 +1023,17 @@ class LCARSVoiceInterface {
       if (meeting) {
         meeting.transcript = transcript;
       }
-      this.flashStatus('TRANSCRIPTION COMPLETE');
+      if (this.diarizationWarning) {
+        this.flashStatus('DONE (NO SPEAKERS: ' + this.diarizationWarning + ')');
+      } else {
+        this.flashStatus('TRANSCRIPTION COMPLETE');
+      }
     } catch (e) {
       console.error('[LCARS] app: Meeting transcription failed:', e);
       this.flashStatus('ERROR: ' + e);
     } finally {
       this.transcribingMeetings.delete(id);
+      this.diarizationWarning = null;
       this.meetingTranscriptionProgress = { stage: null, percent: 0 };
       this.stopTranscribingAnimation();
       this.startIdleWaveform();
