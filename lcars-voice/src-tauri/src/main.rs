@@ -661,15 +661,6 @@ async fn redo_transcription(app: tauri::AppHandle, id: i64) -> Result<String, St
                 .map_err(|e| e.to_string())?;
         }
 
-        // 6. Emit completion
-        {
-            use tauri::Emitter;
-            let _ = app_clone.emit(
-                "redo-transcription-complete",
-                serde_json::json!({"id": id, "text": &result.text}),
-            );
-        }
-
         info!("Redo transcription for id={}: {} chars", id, result.text.len());
         Ok(result.text)
     })

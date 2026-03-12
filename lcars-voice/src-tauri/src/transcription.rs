@@ -111,7 +111,7 @@ fn transcribe_single(
         }
     }
 
-    let text = detect_and_remove_repetitions(&text).trim().to_string();
+    let text = text.trim().to_string();
 
     log::info!("transcription: chunk done, {} chars", text.len());
 
@@ -135,7 +135,9 @@ pub fn transcribe_chunked(
     app: Option<tauri::AppHandle>,
 ) -> Result<TranscriptionResult, String> {
     if audio_data.len() <= CHUNK_THRESHOLD {
-        return transcribe_single(ctx, audio_data, max_tokens, app);
+        let mut result = transcribe_single(ctx, audio_data, max_tokens, app)?;
+        result.text = detect_and_remove_repetitions(&result.text).trim().to_string();
+        return Ok(result);
     }
 
     let chunks = compute_chunks(audio_data.len(), CHUNK_SIZE, CHUNK_OVERLAP);

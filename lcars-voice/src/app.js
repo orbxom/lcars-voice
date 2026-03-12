@@ -333,15 +333,6 @@ class LCARSVoiceInterface {
       this.showDownloadProgress(model, percent);
     });
 
-    listen('redo-transcription-complete', async (event) => {
-      const { id, text } = event.payload;
-      const entry = this.history.find(h => h.id === id);
-      if (entry) {
-        entry.text = text;
-        this.renderHistory();
-      }
-    });
-
     listen('meeting-transcription-progress', (event) => {
       const { stage, percent, warning } = event.payload;
       console.log(`[LCARS] event: Meeting transcription progress: stage=${stage}, percent=${percent}`);
@@ -358,6 +349,17 @@ class LCARSVoiceInterface {
     });
   }
 
+  formatProgressLabel(stage, percent) {
+    if (stage === 'transcribing' && typeof percent === 'number') {
+      return `TRANSCRIBING ${percent}%`;
+    } else if (stage === 'diarizing') {
+      return typeof percent === 'number' && percent > 0 ? `DIARIZING ${percent}%` : 'DIARIZING...';
+    } else if (stage === 'diarization_skipped') {
+      return 'FINALIZING...';
+    }
+    return 'PROCESSING...';
+  }
+
   updateTranscriptionProgress() {
     const { stage, percent } = this.meetingTranscriptionProgress;
     // Start transcribing animation if not already running
@@ -371,15 +373,7 @@ class LCARSVoiceInterface {
     // Targeted update: only update the processing button text
     const btn = this.elements.meetingList.querySelector('.meeting-action-btn.processing');
     if (btn) {
-      if (stage === 'transcribing' && typeof percent === 'number') {
-        btn.textContent = `TRANSCRIBING ${percent}%`;
-      } else if (stage === 'diarizing') {
-        btn.textContent = typeof percent === 'number' && percent > 0 ? `DIARIZING ${percent}%` : 'DIARIZING...';
-      } else if (stage === 'diarization_skipped') {
-        btn.textContent = 'FINALIZING...';
-      } else {
-        btn.textContent = 'PROCESSING...';
-      }
+      btn.textContent = this.formatProgressLabel(stage, percent);
     }
   }
 
@@ -978,14 +972,7 @@ class LCARSVoiceInterface {
       const isTranscribing = this.transcribingMeetings.has(entry.id);
       if (isTranscribing) {
         const progress = this.meetingTranscriptionProgress;
-        let label = 'PROCESSING...';
-        if (progress.stage === 'transcribing' && typeof progress.percent === 'number') {
-          label = `TRANSCRIBING ${progress.percent}%`;
-        } else if (progress.stage === 'diarizing') {
-          label = typeof progress.percent === 'number' && progress.percent > 0 ? `DIARIZING ${progress.percent}%` : 'DIARIZING...';
-        } else if (progress.stage === 'diarization_skipped') {
-          label = 'FINALIZING...';
-        }
+        const label = this.formatProgressLabel(progress.stage, progress.percent);
         actionBtn = `<button class="meeting-action-btn processing" disabled>${label}</button>`;
       } else if (entry.transcript) {
         actionBtn = '<button class="meeting-action-btn retranscribe-btn">REDO</button>'
@@ -1115,32 +1102,22 @@ class LCARSVoiceInterface {
       if (entry) {
         entry.text = newText;
       }
-
-      // Exit transcribing UI state
-      this.meetingTranscriptionProgress = { stage: null, percent: 0 };
-      this.isTranscribing = false;
-      this.stopTranscribingAnimation();
-      this.updateUI(UI_STATE.READY);
-      this.startIdleWaveform();
-
       this.renderHistory();
       this.flashStatus('RE-TRANSCRIBED');
     } catch (err) {
       console.error('Failed to redo transcription:', err);
-
-      // Exit transcribing UI state on error
-      this.meetingTranscriptionProgress = { stage: null, percent: 0 };
-      this.isTranscribing = false;
-      this.stopTranscribingAnimation();
-      this.updateUI(UI_STATE.READY);
-      this.startIdleWaveform();
-
       this.flashStatus('ERROR: REDO FAILED');
       if (redoBtn) {
         redoBtn.disabled = false;
         redoBtn.classList.remove('processing');
         redoBtn.textContent = '\u21BB';
       }
+    } finally {
+      this.meetingTranscriptionProgress = { stage: null, percent: 0 };
+      this.isTranscribing = false;
+      this.stopTranscribingAnimation();
+      this.updateUI(UI_STATE.READY);
+      this.startIdleWaveform();
     }
   }
 

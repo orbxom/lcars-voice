@@ -1,6 +1,6 @@
 //! SQLite storage for transcription history.
 
-use rusqlite::{params, Connection, Result};
+use rusqlite::{params, Connection, Result, Row};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
@@ -12,6 +12,17 @@ pub struct Transcription {
     pub duration_ms: Option<i64>,
     pub model: String,
     pub has_audio: bool,
+}
+
+fn row_to_transcription(row: &Row) -> rusqlite::Result<Transcription> {
+    Ok(Transcription {
+        id: row.get(0)?,
+        text: row.get(1)?,
+        timestamp: row.get(2)?,
+        duration_ms: row.get(3)?,
+        model: row.get(4)?,
+        has_audio: row.get::<_, i32>(5)? != 0,
+    })
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -100,16 +111,7 @@ impl Database {
              LIMIT ?1",
         )?;
 
-        let rows = stmt.query_map([limit], |row| {
-            Ok(Transcription {
-                id: row.get(0)?,
-                text: row.get(1)?,
-                timestamp: row.get(2)?,
-                duration_ms: row.get(3)?,
-                model: row.get(4)?,
-                has_audio: row.get::<_, i32>(5)? != 0,
-            })
-        })?;
+        let rows = stmt.query_map([limit], |row| row_to_transcription(row))?;
 
         rows.collect()
     }
@@ -126,16 +128,7 @@ impl Database {
              LIMIT ?2",
         )?;
 
-        let rows = stmt.query_map(params![pattern, limit], |row| {
-            Ok(Transcription {
-                id: row.get(0)?,
-                text: row.get(1)?,
-                timestamp: row.get(2)?,
-                duration_ms: row.get(3)?,
-                model: row.get(4)?,
-                has_audio: row.get::<_, i32>(5)? != 0,
-            })
-        })?;
+        let rows = stmt.query_map(params![pattern, limit], |row| row_to_transcription(row))?;
 
         rows.collect()
     }

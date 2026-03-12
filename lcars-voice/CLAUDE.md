@@ -86,7 +86,7 @@ Scripts (scripts/)
 - No build tooling - vanilla JS/HTML/CSS
 - Antonio font self-hosted in `src/fonts/`
 - LCARS color palette: Orange (#FF9900), Purple (#CC99CC), Blue (#9999FF), Tan (#FFCC99)
-- Tauri events: `recording-started`, `transcribing`, `transcription-complete`, `transcription-error`, `model-download-progress`, `meeting-saved`, `meeting-transcription-progress`, `meeting-transcription-complete`, `redo-transcription-complete`
+- Tauri events: `recording-started`, `transcribing`, `transcription-complete`, `transcription-error`, `model-download-progress`, `meeting-saved`, `meeting-transcription-progress`, `meeting-transcription-complete`
 - Logging: Uses `log` + `fern` crates for dual output (stderr with `[LCARS]` prefix + daily log file). Levels: error/warn/info/debug.
 
 ## Dependencies
