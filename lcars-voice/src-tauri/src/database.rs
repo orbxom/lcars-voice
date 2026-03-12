@@ -1,6 +1,6 @@
 //! SQLite storage for transcription history.
 
-use rusqlite::{params, Connection, Result};
+use rusqlite::{params, Connection, Result, Row};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
@@ -11,6 +11,18 @@ pub struct Transcription {
     pub timestamp: String,
     pub duration_ms: Option<i64>,
     pub model: String,
+    pub has_audio: bool,
+}
+
+fn row_to_transcription(row: &Row) -> rusqlite::Result<Transcription> {
+    Ok(Transcription {
+        id: row.get(0)?,
+        text: row.get(1)?,
+        timestamp: row.get(2)?,
+        duration_ms: row.get(3)?,
+        model: row.get(4)?,
+        has_audio: row.get::<_, i32>(5)? != 0,
+    })
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -92,21 +104,14 @@ impl Database {
 
     pub fn get_history(&self, limit: usize) -> Result<Vec<Transcription>> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, text, timestamp, duration_ms, model
+            "SELECT id, text, timestamp, duration_ms, model,
+                    CASE WHEN audio_data IS NOT NULL THEN 1 ELSE 0 END AS has_audio
              FROM transcriptions
              ORDER BY timestamp DESC
              LIMIT ?1",
         )?;
 
-        let rows = stmt.query_map([limit], |row| {
-            Ok(Transcription {
-                id: row.get(0)?,
-                text: row.get(1)?,
-                timestamp: row.get(2)?,
-                duration_ms: row.get(3)?,
-                model: row.get(4)?,
-            })
-        })?;
+        let rows = stmt.query_map([limit], |row| row_to_transcription(row))?;
 
         rows.collect()
     }
@@ -115,22 +120,15 @@ impl Database {
         let escaped = query.replace('\\', "\\\\").replace('%', "\\%").replace('_', "\\_");
         let pattern = format!("%{}%", escaped);
         let mut stmt = self.conn.prepare(
-            "SELECT id, text, timestamp, duration_ms, model
+            "SELECT id, text, timestamp, duration_ms, model,
+                    CASE WHEN audio_data IS NOT NULL THEN 1 ELSE 0 END AS has_audio
              FROM transcriptions
              WHERE text LIKE ?1 ESCAPE '\\'
              ORDER BY timestamp DESC
              LIMIT ?2",
         )?;
 
-        let rows = stmt.query_map(params![pattern, limit], |row| {
-            Ok(Transcription {
-                id: row.get(0)?,
-                text: row.get(1)?,
-                timestamp: row.get(2)?,
-                duration_ms: row.get(3)?,
-                model: row.get(4)?,
-            })
-        })?;
+        let rows = stmt.query_map(params![pattern, limit], |row| row_to_transcription(row))?;
 
         rows.collect()
     }
@@ -157,6 +155,14 @@ impl Database {
             return Err(rusqlite::Error::QueryReturnedNoRows);
         }
         Ok(())
+    }
+
+    pub fn get_voice_note_audio(&self, id: i64) -> Result<Vec<u8>> {
+        self.conn.query_row(
+            "SELECT audio_data FROM transcriptions WHERE id = ?1 AND audio_data IS NOT NULL",
+            params![id],
+            |row| row.get(0),
+        )
     }
 
     pub fn add_meeting(
@@ -547,5 +553,54 @@ mod tests {
         assert!(id > 0);
         let history = db.get_history(10).unwrap();
         assert_eq!(history[0].text, "hello");
+    }
+
+    #[test]
+    fn test_has_audio_false_for_add_transcription() {
+        let db = Database::new_in_memory().unwrap();
+        db.add_transcription("hello", None, "base").unwrap();
+        let history = db.get_history(10).unwrap();
+        assert_eq!(history[0].has_audio, false);
+    }
+
+    #[test]
+    fn test_has_audio_true_for_add_voice_note() {
+        let db = Database::new_in_memory().unwrap();
+        db.add_voice_note(&[0u8; 100], 2000, "base").unwrap();
+        let history = db.get_history(10).unwrap();
+        assert_eq!(history[0].has_audio, true);
+    }
+
+    #[test]
+    fn test_get_voice_note_audio() {
+        let audio = vec![1u8, 2, 3, 4, 5];
+        let db = Database::new_in_memory().unwrap();
+        let id = db.add_voice_note(&audio, 1000, "base").unwrap();
+        let retrieved = db.get_voice_note_audio(id).unwrap();
+        assert_eq!(retrieved, vec![1u8, 2, 3, 4, 5]);
+    }
+
+    #[test]
+    fn test_get_voice_note_audio_not_found() {
+        let db = Database::new_in_memory().unwrap();
+        let result = db.get_voice_note_audio(999);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_get_voice_note_audio_null_audio() {
+        let db = Database::new_in_memory().unwrap();
+        let id = db.add_transcription("hello", None, "base").unwrap();
+        let result = db.get_voice_note_audio(id);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_search_includes_has_audio() {
+        let db = Database::new_in_memory().unwrap();
+        db.add_voice_note(&[0u8; 100], 2000, "base").unwrap();
+        db.update_transcription_text(1, "searchable text").unwrap();
+        let results = db.search("searchable", 10).unwrap();
+        assert_eq!(results[0].has_audio, true);
     }
 }

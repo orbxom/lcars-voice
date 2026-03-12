@@ -581,23 +581,44 @@ async fn transcribe_meeting(app: tauri::AppHandle, id: i64) -> Result<String, St
             meeting_transcription::transcribe_meeting_audio(ctx, &samples, &model, Some(app_clone.clone()))?
         };
 
-        // 6. Filter hallucinations
-        let mut segments = meeting_transcription::filter_hallucinations(segments);
+        // 6. Filter hallucinations + deduplicate near-identical segments + remove bursts
+        let segments = meeting_transcription::filter_hallucinations(segments);
+        let segments = meeting_transcription::deduplicate_segments(segments);
+        let mut segments = meeting_transcription::remove_hallucination_bursts(segments);
 
         // 7. Emit progress: diarizing
         let _ = app_clone.emit("meeting-transcription-progress",
             serde_json::json!({"stage": "diarizing", "percent": null}));
 
         // 8. Try speaker diarization (graceful fallback if unavailable)
-        if let Some(turns) = meeting_transcription::run_diarization(&wav_bytes) {
-            meeting_transcription::assign_speakers(&mut segments, &turns);
-            segments = meeting_transcription::merge_consecutive_speakers(segments);
+        match meeting_transcription::run_diarization(&wav_bytes, Some(app_clone.clone())) {
+            Ok(turns) => {
+                meeting_transcription::assign_speakers(&mut segments, &turns);
+                segments = meeting_transcription::merge_consecutive_speakers(segments);
+            }
+            Err(e) => {
+                log::warn!("Diarization failed: {}", e);
+                let _ = app_clone.emit("meeting-transcription-progress",
+                    serde_json::json!({
+                        "stage": "diarization_skipped",
+                        "warning": e.to_string()
+                    }));
+            }
         }
 
-        // 9. Format transcript
+        // 9. Clean repetitions in merged segment text
+        // merge_consecutive_speakers concatenates text from multiple segments,
+        // which can create NEW repetition patterns not detectable per-segment.
+        for seg in segments.iter_mut() {
+            seg.text = crate::transcription::detect_and_remove_repetitions(&seg.text)
+                .trim()
+                .to_string();
+        }
+
+        // 10. Format transcript
         let transcript = meeting_transcription::format_transcript(&segments);
 
-        // 10. Save to DB
+        // 11. Save to DB
         {
             let db = state.db.lock().map_err(|e| e.to_string())?;
             db.save_meeting_transcript(id, &transcript)
@@ -610,6 +631,49 @@ async fn transcribe_meeting(app: tauri::AppHandle, id: i64) -> Result<String, St
             transcript.len()
         );
         Ok(transcript)
+    })
+    .await
+    .map_err(|e| format!("Task error: {}", e))?
+}
+
+#[tauri::command]
+async fn redo_transcription(app: tauri::AppHandle, id: i64) -> Result<String, String> {
+    let app_clone = app.clone();
+
+    tokio::task::spawn_blocking(move || {
+        let state: tauri::State<AppState> = app_clone.state();
+
+        // 1. Get audio from DB
+        let wav_bytes = {
+            let db = state.db.lock().map_err(|e| e.to_string())?;
+            db.get_voice_note_audio(id)
+                .map_err(|e| format!("Voice note audio not found: {}", e))?
+        };
+
+        // 2. Decode WAV to f32 samples
+        let samples = meeting_transcription::decode_wav_blob(&wav_bytes)
+            .map_err(|e| format!("WAV decode failed: {}", e))?;
+
+        // 3. Ensure whisper model is loaded
+        let model = get_current_model(&app_clone);
+        ensure_whisper_context(&app_clone, &state, &model)?;
+
+        // 4. Transcribe (uses chunked logic automatically)
+        let result = {
+            let ctx_guard = state.whisper_ctx.lock().map_err(|e| e.to_string())?;
+            let ctx = ctx_guard.as_ref().ok_or("Whisper context not loaded")?;
+            transcription::transcribe(ctx, &samples, &model, Some(app_clone.clone()))?
+        };
+
+        // 5. Update DB
+        {
+            let db = state.db.lock().map_err(|e| e.to_string())?;
+            db.update_transcription_text(id, &result.text)
+                .map_err(|e| e.to_string())?;
+        }
+
+        info!("Redo transcription for id={}: {} chars", id, result.text.len());
+        Ok(result.text)
     })
     .await
     .map_err(|e| format!("Task error: {}", e))?
@@ -690,6 +754,7 @@ fn main() {
             get_meeting_history,
             rename_meeting,
             transcribe_meeting,
+            redo_transcription,
         ])
         .setup(move |app| {
             // Set window icon

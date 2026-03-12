@@ -274,6 +274,97 @@ describe('updateTranscriptionProgress does targeted DOM update', () => {
 
     expect(btn.textContent).toBe('DIARIZING...');
   });
+
+  it('should show DIARIZING 50% on the meeting action button when stage=diarizing, percent=50', () => {
+    const btn = { textContent: 'PROCESSING...' };
+    app.elements.meetingList.querySelector = vi.fn(() => btn);
+    app.meetingTranscriptionProgress = { stage: 'diarizing', percent: 50 };
+    app.transcribeAnimationId = 1;
+
+    app.updateTranscriptionProgress();
+
+    expect(btn.textContent).toBe('DIARIZING 50%');
+  });
+
+  it('should show DIARIZING... when stage=diarizing, percent=null', () => {
+    const btn = { textContent: 'PROCESSING...' };
+    app.elements.meetingList.querySelector = vi.fn(() => btn);
+    app.meetingTranscriptionProgress = { stage: 'diarizing', percent: null };
+    app.transcribeAnimationId = 1;
+
+    app.updateTranscriptionProgress();
+
+    expect(btn.textContent).toBe('DIARIZING...');
+  });
+
+  it('should show FINALIZING... for diarization_skipped stage', () => {
+    const btn = { textContent: 'PROCESSING...' };
+    app.elements.meetingList.querySelector = vi.fn(() => btn);
+    app.meetingTranscriptionProgress = { stage: 'diarization_skipped', percent: 0 };
+    app.transcribeAnimationId = 1;
+
+    app.updateTranscriptionProgress();
+
+    expect(btn.textContent).toBe('FINALIZING...');
+  });
+});
+
+describe('meeting-transcription-progress status text updates', () => {
+  let app;
+  let listenCallbacks;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    // Capture listen callbacks so we can invoke the event handler
+    listenCallbacks = {};
+    window.__TAURI__.event.listen = vi.fn((eventName, cb) => {
+      listenCallbacks[eventName] = cb;
+      return Promise.resolve(vi.fn());
+    });
+    app = createTestInstance();
+    app.startTranscribingAnimation = vi.fn();
+    app.elements.meetingList = { querySelector: vi.fn() };
+    // Re-bind to capture the listen callbacks
+    app.bindTauriEvents();
+  });
+
+  it('should show DIARIZING 50% in status text when stage=diarizing and isTranscribing', () => {
+    app.isTranscribing = true;
+
+    // Simulate the event
+    listenCallbacks['meeting-transcription-progress']({
+      payload: { stage: 'diarizing', percent: 50 },
+    });
+
+    expect(app.elements.statusText.textContent).toBe('DIARIZING 50%');
+  });
+
+  it('should show TRANSCRIBING 50% in status text when stage=transcribing and isTranscribing', () => {
+    app.isTranscribing = true;
+
+    listenCallbacks['meeting-transcription-progress']({
+      payload: { stage: 'transcribing', percent: 50 },
+    });
+
+    expect(app.elements.statusText.textContent).toBe('TRANSCRIBING 50%');
+  });
+
+  it('should store diarizationWarning when warning field is present', () => {
+    listenCallbacks['meeting-transcription-progress']({
+      payload: { stage: 'diarization_skipped', warning: 'Python not found' },
+    });
+
+    expect(app.diarizationWarning).toBe('Python not found');
+  });
+
+  it('should not set diarizationWarning when no warning field', () => {
+    app.diarizationWarning = null;
+    listenCallbacks['meeting-transcription-progress']({
+      payload: { stage: 'diarizing', percent: 50 },
+    });
+
+    expect(app.diarizationWarning).toBeNull();
+  });
 });
 
 describe('Bug 1: setRecordingMode updates record button text', () => {
@@ -334,5 +425,66 @@ describe('Bug 2: transcribing event sets progress state for animation', () => {
 
     expect(progressAtAnimationStart.stage).toBe('transcribing');
     expect(progressAtAnimationStart.percent).toBe(0);
+  });
+});
+
+describe('redo button rendering based on has_audio', () => {
+  let app;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    app = createTestInstance();
+    app.elements.historyList = { innerHTML: '', addEventListener: vi.fn() };
+  });
+
+  it('should render redo button for entries with has_audio=true', () => {
+    app.history = [{
+      id: 1, text: 'test text', timestamp: '2026-03-01T12:00:00',
+      duration_ms: 5000, model: 'base', has_audio: true,
+    }];
+    app.renderHistory();
+    expect(app.elements.historyList.innerHTML).toContain('redo-btn');
+  });
+
+  it('should NOT render redo button for entries with has_audio=false', () => {
+    app.history = [{
+      id: 1, text: 'test text', timestamp: '2026-03-01T12:00:00',
+      duration_ms: 5000, model: 'base', has_audio: false,
+    }];
+    app.renderHistory();
+    expect(app.elements.historyList.innerHTML).not.toContain('redo-btn');
+  });
+});
+
+describe('meeting redo button rendering', () => {
+  let app;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    app = createTestInstance();
+    app.elements.meetingList = { innerHTML: '', addEventListener: vi.fn() };
+    app.transcribingMeetings = new Set();
+  });
+
+  it('should render REDO + COPY buttons when meeting has transcript', () => {
+    app.meetings = [{
+      id: 1, filename: 'test.wav', timestamp: '2026-03-01T12:00:00',
+      duration_ms: 60000, size_bytes: 1024 * 1024, transcript: 'Hello world',
+    }];
+    app.renderMeetingHistory();
+    expect(app.elements.meetingList.innerHTML).toContain('retranscribe-btn');
+    expect(app.elements.meetingList.innerHTML).toContain('copy-transcript-btn');
+    expect(app.elements.meetingList.innerHTML).toContain('REDO');
+    expect(app.elements.meetingList.innerHTML).toContain('COPY');
+  });
+
+  it('should render TRANSCRIBE button when meeting has no transcript', () => {
+    app.meetings = [{
+      id: 2, filename: 'test2.wav', timestamp: '2026-03-01T13:00:00',
+      duration_ms: 30000, size_bytes: 512 * 1024, transcript: null,
+    }];
+    app.renderMeetingHistory();
+    expect(app.elements.meetingList.innerHTML).toContain('transcribe-btn');
+    expect(app.elements.meetingList.innerHTML).not.toContain('retranscribe-btn');
   });
 });
