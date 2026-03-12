@@ -207,8 +207,9 @@ pub fn detect_and_remove_repetitions(text: &str) -> String {
     }
 
     // Try n-gram sizes from largest to smallest (catch phrase loops first)
-    // Upper bound: need at least 3 occurrences (1 original + max_repeats=2), capped at 50
-    let max_ngram = (words.len() / 3).min(50);
+    // Upper bound: need at least 3 occurrences (1 original + max_repeats=2), capped at 100
+    // to catch longer hallucinated phrases in merged meeting segments
+    let max_ngram = (words.len() / 3).min(100);
     for ngram_size in (1..=max_ngram).rev() {
         let max_repeats = if ngram_size <= 2 { 4 } else { 2 };
 

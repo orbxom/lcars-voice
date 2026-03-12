@@ -581,8 +581,10 @@ async fn transcribe_meeting(app: tauri::AppHandle, id: i64) -> Result<String, St
             meeting_transcription::transcribe_meeting_audio(ctx, &samples, &model, Some(app_clone.clone()))?
         };
 
-        // 6. Filter hallucinations
-        let mut segments = meeting_transcription::filter_hallucinations(segments);
+        // 6. Filter hallucinations + deduplicate near-identical segments + remove bursts
+        let segments = meeting_transcription::filter_hallucinations(segments);
+        let segments = meeting_transcription::deduplicate_segments(segments);
+        let mut segments = meeting_transcription::remove_hallucination_bursts(segments);
 
         // 7. Emit progress: diarizing
         let _ = app_clone.emit("meeting-transcription-progress",
@@ -604,10 +606,19 @@ async fn transcribe_meeting(app: tauri::AppHandle, id: i64) -> Result<String, St
             }
         }
 
-        // 9. Format transcript
+        // 9. Clean repetitions in merged segment text
+        // merge_consecutive_speakers concatenates text from multiple segments,
+        // which can create NEW repetition patterns not detectable per-segment.
+        for seg in segments.iter_mut() {
+            seg.text = crate::transcription::detect_and_remove_repetitions(&seg.text)
+                .trim()
+                .to_string();
+        }
+
+        // 10. Format transcript
         let transcript = meeting_transcription::format_transcript(&segments);
 
-        // 10. Save to DB
+        // 11. Save to DB
         {
             let db = state.db.lock().map_err(|e| e.to_string())?;
             db.save_meeting_transcript(id, &transcript)

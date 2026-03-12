@@ -3,6 +3,7 @@
 //! Provides WAV decoding, hallucination filtering, speaker diarization assignment,
 //! segment merging, and transcript formatting.
 
+use std::collections::{HashSet, VecDeque};
 use std::io::Cursor;
 
 /// A single Whisper transcription segment with timing, text, and optional speaker.
@@ -183,6 +184,175 @@ pub fn filter_hallucinations(segments: Vec<WhisperSegment>) -> Vec<WhisperSegmen
     }
 
     result
+}
+
+/// Normalize text for similarity comparison: lowercase, strip punctuation, collapse whitespace.
+fn normalize_for_comparison(text: &str) -> String {
+    let mut result = String::with_capacity(text.len());
+    let mut prev_was_space = true;
+    for c in text.chars() {
+        if c.is_alphanumeric() {
+            result.push(c.to_ascii_lowercase());
+            prev_was_space = false;
+        } else if !prev_was_space {
+            result.push(' ');
+            prev_was_space = true;
+        }
+    }
+    if result.ends_with(' ') {
+        result.pop();
+    }
+    result
+}
+
+/// Compute Jaccard similarity between two texts based on word sets.
+fn word_jaccard_similarity(a: &str, b: &str) -> f64 {
+    let a_words: HashSet<&str> = a.split_whitespace().collect();
+    let b_words: HashSet<&str> = b.split_whitespace().collect();
+
+    if a_words.is_empty() && b_words.is_empty() {
+        return 1.0;
+    }
+    if a_words.is_empty() || b_words.is_empty() {
+        return 0.0;
+    }
+
+    let intersection = a_words.intersection(&b_words).count();
+    let union = a_words.union(&b_words).count();
+
+    intersection as f64 / union as f64
+}
+
+/// Remove near-duplicate segments that are likely whisper hallucinations.
+///
+/// Compares each segment against a sliding window of recent segments.
+/// If the normalized text has Jaccard word similarity > 0.8 with any recent
+/// segment, it is considered a hallucinated duplicate and removed.
+/// Segments with fewer than 5 words are exempt from deduplication.
+pub fn deduplicate_segments(segments: Vec<WhisperSegment>) -> Vec<WhisperSegment> {
+    if segments.len() < 2 {
+        return segments;
+    }
+
+    const WINDOW_SIZE: usize = 5;
+    const SIMILARITY_THRESHOLD: f64 = 0.8;
+    const MIN_WORDS: usize = 5;
+
+    let initial_count = segments.len();
+    let mut result: Vec<WhisperSegment> = Vec::with_capacity(segments.len());
+    let mut recent: VecDeque<String> = VecDeque::with_capacity(WINDOW_SIZE + 1);
+
+    for seg in segments {
+        let normalized = normalize_for_comparison(&seg.text);
+        let word_count = normalized.split_whitespace().count();
+
+        let is_duplicate = word_count >= MIN_WORDS
+            && recent.iter().any(|prev| {
+                let prev_words = prev.split_whitespace().count();
+                prev_words >= MIN_WORDS
+                    && word_jaccard_similarity(prev, &normalized) > SIMILARITY_THRESHOLD
+            });
+
+        if !is_duplicate {
+            result.push(seg);
+        } else {
+            log::debug!(
+                "deduplicate_segments: removed near-duplicate: '{}'",
+                &seg.text[..seg.text.len().min(80)]
+            );
+        }
+
+        recent.push_back(normalized);
+        if recent.len() > WINDOW_SIZE {
+            recent.pop_front();
+        }
+    }
+
+    let removed = initial_count - result.len();
+    if removed > 0 {
+        log::info!(
+            "deduplicate_segments: removed {}/{} near-duplicate segments",
+            removed,
+            initial_count
+        );
+    }
+
+    result
+}
+
+/// Remove hallucination bursts — runs of 4+ consecutive segments with similar text.
+///
+/// Unlike `deduplicate_segments` which uses a similarity window for longer segments,
+/// this catches the pattern where whisper gets stuck repeating a short phrase
+/// (e.g. "I see.", "I don't know.") across many consecutive segments.
+/// Uses Jaccard word similarity > 0.5 to detect runs, keeping only the first segment
+/// of each burst.
+pub fn remove_hallucination_bursts(segments: Vec<WhisperSegment>) -> Vec<WhisperSegment> {
+    if segments.len() < 4 {
+        return segments;
+    }
+
+    const BURST_THRESHOLD: usize = 4;
+    const SIMILARITY_THRESHOLD: f64 = 0.5;
+
+    let normalized: Vec<String> = segments.iter()
+        .map(|s| normalize_for_comparison(&s.text))
+        .collect();
+
+    let mut keep = vec![true; segments.len()];
+    let mut i = 0;
+
+    while i < segments.len() {
+        // Skip empty segments
+        if normalized[i].is_empty() {
+            i += 1;
+            continue;
+        }
+
+        // Extend the run while consecutive segments are similar
+        let mut run_end = i + 1;
+        while run_end < segments.len() {
+            if !normalized[run_end].is_empty()
+                && word_jaccard_similarity(&normalized[i], &normalized[run_end]) > SIMILARITY_THRESHOLD
+            {
+                run_end += 1;
+            } else {
+                break;
+            }
+        }
+
+        let run_length = run_end - i;
+        if run_length >= BURST_THRESHOLD {
+            // Keep only the first segment in the burst
+            for k in (i + 1)..run_end {
+                keep[k] = false;
+            }
+            log::info!(
+                "remove_hallucination_bursts: removed {} segments in burst at index {} ('{}')",
+                run_length - 1,
+                i,
+                &normalized[i][..normalized[i].len().min(40)]
+            );
+        }
+
+        i = run_end;
+    }
+
+    let removed = keep.iter().filter(|&&k| !k).count();
+    if removed > 0 {
+        log::info!(
+            "remove_hallucination_bursts: removed {}/{} burst segments total",
+            removed,
+            segments.len()
+        );
+    }
+
+    segments
+        .into_iter()
+        .zip(keep.into_iter())
+        .filter(|(_, k)| *k)
+        .map(|(s, _)| s)
+        .collect()
 }
 
 /// Assign speaker labels to segments based on diarization turns.
@@ -1252,6 +1422,171 @@ mod tests {
     fn test_classify_diarization_error_unknown() {
         let stderr = "some random error";
         assert!(classify_diarization_error(stderr).contains("Check logs"));
+    }
+
+    // ===============================================================
+    // Segment deduplication tests
+    // ===============================================================
+
+    #[test]
+    fn test_deduplicate_removes_identical_segments() {
+        let segments = vec![
+            seg(0.0, 5.0, "I think we should focus on the product experience for our users"),
+            seg(5.0, 10.0, "I think we should focus on the product experience for our users"),
+            seg(10.0, 15.0, "I think we should focus on the product experience for our users"),
+            seg(15.0, 20.0, "Moving on to the next topic of discussion"),
+        ];
+        let result = deduplicate_segments(segments);
+        assert_eq!(result.len(), 2, "Should keep first occurrence and the different segment");
+        assert!(result[0].text.contains("product experience"));
+        assert!(result[1].text.contains("next topic"));
+    }
+
+    #[test]
+    fn test_deduplicate_removes_near_identical_segments() {
+        let segments = vec![
+            seg(0.0, 5.0, "I think we should focus on the product experience for our users"),
+            seg(5.0, 10.0, "I think we should focus on the product experience for our users."),
+            seg(10.0, 15.0, "And I think we should focus on the product experience for our users"),
+        ];
+        let result = deduplicate_segments(segments);
+        assert_eq!(result.len(), 1, "Near-duplicates with punctuation/filler differences should be removed");
+    }
+
+    #[test]
+    fn test_deduplicate_preserves_different_segments() {
+        let segments = vec![
+            seg(0.0, 5.0, "Today we are going to discuss the roadmap for next quarter"),
+            seg(5.0, 10.0, "The first item on the agenda is our hiring plan for engineering"),
+            seg(10.0, 15.0, "We need to finalize the budget before the end of this week"),
+        ];
+        let result = deduplicate_segments(segments);
+        assert_eq!(result.len(), 3, "Different segments should all be preserved");
+    }
+
+    #[test]
+    fn test_deduplicate_preserves_short_segments() {
+        let segments = vec![
+            seg(0.0, 1.0, "Yes, right."),
+            seg(1.0, 2.0, "Yes, right."),
+            seg(2.0, 3.0, "Okay."),
+        ];
+        let result = deduplicate_segments(segments);
+        assert_eq!(result.len(), 3, "Short segments (<5 words) should be exempt from dedup");
+    }
+
+    #[test]
+    fn test_deduplicate_handles_empty_and_single() {
+        assert_eq!(deduplicate_segments(vec![]).len(), 0);
+        let single = vec![seg(0.0, 5.0, "Just one segment here.")];
+        assert_eq!(deduplicate_segments(single).len(), 1);
+    }
+
+    #[test]
+    fn test_deduplicate_sliding_window() {
+        // A, B, C, A pattern with window_size=5 should catch the repeated A
+        let segments = vec![
+            seg(0.0, 5.0, "I think we should focus on the product experience for our users"),
+            seg(5.0, 10.0, "The budget needs to be finalized before the quarterly review meeting"),
+            seg(10.0, 15.0, "Let me check with the engineering team about their timeline estimate"),
+            seg(15.0, 20.0, "I think we should focus on the product experience for our users"),
+        ];
+        let result = deduplicate_segments(segments);
+        assert_eq!(result.len(), 3, "Repeated A after B,C should be caught within window");
+    }
+
+    #[test]
+    fn test_normalize_for_comparison() {
+        assert_eq!(
+            normalize_for_comparison("Hello, World! How's it going?"),
+            "hello world how s it going"
+        );
+        assert_eq!(
+            normalize_for_comparison("  Multiple   spaces   here  "),
+            "multiple spaces here"
+        );
+    }
+
+    #[test]
+    fn test_word_jaccard_similarity() {
+        assert!((word_jaccard_similarity("a b c d e", "a b c d e") - 1.0).abs() < 0.001);
+        assert!((word_jaccard_similarity("a b c", "d e f") - 0.0).abs() < 0.001);
+        // {a,b,c,d} vs {a,b,c,e} => intersection=3, union=5 => 0.6
+        assert!((word_jaccard_similarity("a b c d", "a b c e") - 0.6).abs() < 0.001);
+        assert!((word_jaccard_similarity("", "") - 1.0).abs() < 0.001);
+        assert!((word_jaccard_similarity("a", "") - 0.0).abs() < 0.001);
+    }
+
+    // ===============================================================
+    // Hallucination burst detection tests
+    // ===============================================================
+
+    #[test]
+    fn test_burst_removes_i_see_repetition() {
+        let mut segments = Vec::new();
+        for i in 0..10 {
+            segments.push(seg(i as f64, (i + 1) as f64, "I see."));
+        }
+        segments.push(seg(10.0, 12.0, "Anyway, let me check something different now."));
+        let result = remove_hallucination_bursts(segments);
+        assert_eq!(result.len(), 2, "Should keep first 'I see' + the different segment");
+        assert_eq!(result[0].text, "I see.");
+        assert!(result[1].text.contains("Anyway"));
+    }
+
+    #[test]
+    fn test_burst_removes_i_dont_know_repetition() {
+        let mut segments = Vec::new();
+        for i in 0..8 {
+            let text = if i % 2 == 0 { "I don't know." } else { "I don't know. I don't know." };
+            segments.push(seg(i as f64, (i + 1) as f64, text));
+        }
+        let result = remove_hallucination_bursts(segments);
+        assert_eq!(result.len(), 1, "All variations of 'I don't know' should collapse to one");
+    }
+
+    #[test]
+    fn test_burst_preserves_short_runs() {
+        let segments = vec![
+            seg(0.0, 1.0, "I see."),
+            seg(1.0, 2.0, "I see."),
+            seg(2.0, 3.0, "I see."),
+            seg(3.0, 5.0, "That's interesting, tell me more about it."),
+        ];
+        let result = remove_hallucination_bursts(segments);
+        assert_eq!(result.len(), 4, "Run of 3 is below threshold of 4, all preserved");
+    }
+
+    #[test]
+    fn test_burst_handles_two_separate_bursts() {
+        let mut segments = Vec::new();
+        // First burst: "I see" x5
+        for i in 0..5 {
+            segments.push(seg(i as f64, (i + 1) as f64, "I see."));
+        }
+        // Legitimate segment in between
+        segments.push(seg(5.0, 7.0, "Okay so moving on to the next item on our agenda"));
+        // Second burst: "I don't know" x6
+        for i in 7..13 {
+            segments.push(seg(i as f64, (i + 1) as f64, "I don't know."));
+        }
+        let result = remove_hallucination_bursts(segments);
+        assert_eq!(result.len(), 3, "Two bursts collapsed + one legitimate segment");
+        assert_eq!(result[0].text, "I see.");
+        assert!(result[1].text.contains("agenda"));
+        assert_eq!(result[2].text, "I don't know.");
+    }
+
+    #[test]
+    fn test_burst_preserves_varied_conversation() {
+        let segments = vec![
+            seg(0.0, 3.0, "I think we should focus on the database issue first"),
+            seg(3.0, 6.0, "Yeah the database has been slow since the migration"),
+            seg(6.0, 9.0, "Let me check the query performance metrics now"),
+            seg(9.0, 12.0, "The index seems to be missing on the users table"),
+        ];
+        let result = remove_hallucination_bursts(segments);
+        assert_eq!(result.len(), 4, "Varied conversation should be fully preserved");
     }
 
     #[test]
