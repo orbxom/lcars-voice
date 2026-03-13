@@ -2,11 +2,18 @@
 
 use whisper_rs::{FullParams, SamplingStrategy, WhisperContext};
 
-/// 5 minutes of audio at 16kHz mono.
+/// 30 seconds of audio at 16kHz mono (matches whisper's native attention window).
+pub const VOICE_NOTE_CHUNK_SIZE: usize = 16000 * 30;
+/// 1 second overlap between consecutive voice note chunks.
+pub const VOICE_NOTE_CHUNK_OVERLAP: usize = 16000;
+/// Voice note audio longer than this is chunked.
+pub const VOICE_NOTE_CHUNK_THRESHOLD: usize = VOICE_NOTE_CHUNK_SIZE;
+
+/// 5 minutes of audio at 16kHz mono (used by meeting transcription).
 pub const CHUNK_SIZE: usize = 16000 * 60 * 5;
-/// 1 second overlap between consecutive chunks.
+/// 1 second overlap between consecutive chunks (used by meeting transcription).
 pub const CHUNK_OVERLAP: usize = 16000;
-/// Audio longer than this threshold is chunked.
+/// Audio longer than this threshold is chunked (used by meeting transcription).
 pub const CHUNK_THRESHOLD: usize = CHUNK_SIZE;
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -134,34 +141,80 @@ pub fn transcribe_chunked(
     max_tokens: i32,
     app: Option<tauri::AppHandle>,
 ) -> Result<TranscriptionResult, String> {
-    if audio_data.len() <= CHUNK_THRESHOLD {
+    if audio_data.len() <= VOICE_NOTE_CHUNK_THRESHOLD {
         let mut result = transcribe_single(ctx, audio_data, max_tokens, app)?;
         result.text = detect_and_remove_repetitions(&result.text).trim().to_string();
         return Ok(result);
     }
 
-    let chunks = compute_chunks(audio_data.len(), CHUNK_SIZE, CHUNK_OVERLAP);
+    let chunks = compute_chunks(audio_data.len(), VOICE_NOTE_CHUNK_SIZE, VOICE_NOTE_CHUNK_OVERLAP);
     log::info!(
         "transcription: chunking {} samples into {} chunks",
         audio_data.len(),
         chunks.len()
     );
 
+    let num_chunks = chunks.len();
     let mut texts = Vec::new();
     for (i, (start, end)) in chunks.iter().enumerate() {
         log::info!(
             "transcription: chunk {}/{} (samples {}..{})",
             i + 1,
-            chunks.len(),
+            num_chunks,
             start,
             end
         );
         let chunk_audio = &audio_data[*start..*end];
-        let result = transcribe_single(ctx, chunk_audio, max_tokens, app.clone())?;
-        texts.push(result.text);
+
+        // Build params with rescaled progress so the bar spans all chunks
+        let mut params = build_whisper_params(max_tokens, None);
+        if let Some(ref app_handle) = app {
+            let app_cb = app_handle.clone();
+            let ci = i;
+            let nc = num_chunks;
+            params.set_progress_callback_safe(move |local_percent: i32| {
+                crate::meeting_transcription::emit_chunk_progress(&app_cb, ci, nc, local_percent);
+            });
+        }
+
+        let mut state = ctx
+            .create_state()
+            .map_err(|e| format!("Failed to create whisper state: {}", e))?;
+        state
+            .full(params, chunk_audio)
+            .map_err(|e| format!("Whisper inference failed: {}", e))?;
+
+        let num_segments = state.full_n_segments();
+        let mut text = String::new();
+        for seg_i in 0..num_segments {
+            if let Some(segment) = state.get_segment(seg_i) {
+                if segment.no_speech_probability() > 0.8 {
+                    log::debug!(
+                        "transcription: skipping segment {} (no_speech_prob={:.2})",
+                        seg_i,
+                        segment.no_speech_probability()
+                    );
+                    continue;
+                }
+                if let Ok(s) = segment.to_str() {
+                    text.push_str(s);
+                }
+            }
+        }
+        let text = text.trim().to_string();
+        log::info!("transcription: chunk done, {} chars", text.len());
+        texts.push(text);
     }
 
-    let combined = texts.join(" ");
+    // Remove overlapping text at chunk boundaries before joining
+    let mut combined = texts[0].clone();
+    for text in &texts[1..] {
+        let deduped = remove_chunk_text_overlap(&combined, text, 20);
+        if !combined.is_empty() && !deduped.is_empty() {
+            combined.push(' ');
+        }
+        combined.push_str(&deduped);
+    }
     let text = detect_and_remove_repetitions(&combined).trim().to_string();
 
     log::info!("transcription: all chunks done, {} chars combined", text.len());
@@ -176,7 +229,7 @@ pub fn transcribe_chunked(
 ///
 /// `audio_data` must be f32 PCM samples at 16kHz mono.
 /// If `app` is provided, emits `meeting-transcription-progress` events with percent updates.
-/// Long audio (>5 minutes) is automatically chunked to prevent whisper hallucination.
+/// Long audio (>30 seconds) is automatically chunked to prevent whisper hallucination.
 pub fn transcribe(
     ctx: &WhisperContext,
     audio_data: &[f32],
@@ -189,6 +242,33 @@ pub fn transcribe(
         audio_data.len()
     );
     transcribe_chunked(ctx, audio_data, model_name, 100, app)
+}
+
+/// Removes overlapping text between consecutive transcription chunks.
+///
+/// When chunks overlap in audio, whisper may transcribe the same words at the
+/// end of one chunk and the start of the next. This finds the longest matching
+/// word sequence (suffix of `prev` == prefix of `next`) and removes it from `next`.
+fn remove_chunk_text_overlap(prev: &str, next: &str, max_overlap_words: usize) -> String {
+    let prev_words: Vec<&str> = prev.split_whitespace().collect();
+    let next_words: Vec<&str> = next.split_whitespace().collect();
+
+    let max_check = prev_words.len().min(next_words.len()).min(max_overlap_words);
+
+    // Search from longest to shortest to find the best match
+    for overlap_len in (1..=max_check).rev() {
+        let prev_suffix = &prev_words[prev_words.len() - overlap_len..];
+        let next_prefix = &next_words[..overlap_len];
+        if prev_suffix == next_prefix {
+            log::debug!(
+                "transcription: removing {}-word text overlap between chunks",
+                overlap_len
+            );
+            return next_words[overlap_len..].join(" ");
+        }
+    }
+
+    next.to_string()
 }
 
 /// Detects and removes repetitive phrases from transcription output.
@@ -441,33 +521,41 @@ mod tests {
     #[test]
     fn test_compute_chunks_short_audio() {
         // Audio shorter than chunk size = 1 chunk
-        let chunks = compute_chunks(100_000, CHUNK_SIZE, CHUNK_OVERLAP);
+        let chunk_size = 480_000;
+        let overlap = 16_000;
+        let chunks = compute_chunks(100_000, chunk_size, overlap);
         assert_eq!(chunks, vec![(0, 100_000)]);
     }
 
     #[test]
     fn test_compute_chunks_exact_chunk_size() {
         // Audio exactly equal to chunk size = 1 chunk
-        let chunks = compute_chunks(CHUNK_SIZE, CHUNK_SIZE, CHUNK_OVERLAP);
-        assert_eq!(chunks, vec![(0, CHUNK_SIZE)]);
+        let chunk_size = 480_000;
+        let overlap = 16_000;
+        let chunks = compute_chunks(chunk_size, chunk_size, overlap);
+        assert_eq!(chunks, vec![(0, chunk_size)]);
     }
 
     #[test]
     fn test_compute_chunks_two_chunks() {
-        // 6M samples with 4.8M chunk and 16K overlap => 2 chunks
-        let total = 6_000_000;
-        let chunks = compute_chunks(total, CHUNK_SIZE, CHUNK_OVERLAP);
+        // 600K samples with 480K chunk and 16K overlap => 2 chunks
+        let chunk_size = 480_000;
+        let overlap = 16_000;
+        let total = 600_000;
+        let chunks = compute_chunks(total, chunk_size, overlap);
         assert_eq!(chunks.len(), 2);
         assert_eq!(chunks[0].0, 0);
-        assert_eq!(chunks[0].1, CHUNK_SIZE);
+        assert_eq!(chunks[0].1, chunk_size);
         assert_eq!(chunks[1].1, total);
     }
 
     #[test]
     fn test_compute_chunks_three_chunks() {
-        // 12M samples => should produce 3 chunks
-        let total = 12_000_000;
-        let chunks = compute_chunks(total, CHUNK_SIZE, CHUNK_OVERLAP);
+        // 1.2M samples with 480K chunk => 3 chunks
+        let chunk_size = 480_000;
+        let overlap = 16_000;
+        let total = 1_200_000;
+        let chunks = compute_chunks(total, chunk_size, overlap);
         assert_eq!(chunks.len(), 3);
         assert_eq!(chunks[0].0, 0);
         assert_eq!(chunks.last().unwrap().1, total);
@@ -475,24 +563,69 @@ mod tests {
 
     #[test]
     fn test_compute_chunks_overlap_coverage() {
-        // Verify consecutive chunks overlap by exactly CHUNK_OVERLAP samples
-        let total = 12_000_000;
-        let chunks = compute_chunks(total, CHUNK_SIZE, CHUNK_OVERLAP);
+        // Verify consecutive chunks overlap by exactly the specified overlap
+        let chunk_size = 480_000;
+        let overlap = 16_000;
+        let total = 1_200_000;
+        let chunks = compute_chunks(total, chunk_size, overlap);
         for window in chunks.windows(2) {
             let (_, end_a) = window[0];
             let (start_b, _) = window[1];
             assert!(start_b < end_a, "Chunks should overlap");
-            assert_eq!(end_a - start_b, CHUNK_OVERLAP, "Overlap should be exactly CHUNK_OVERLAP");
+            assert_eq!(end_a - start_b, overlap, "Overlap should be exactly the specified overlap");
         }
     }
 
     #[test]
     fn test_compute_chunks_covers_all_audio() {
         // First chunk starts at 0, last chunk ends at total
-        let total = 10_000_000;
-        let chunks = compute_chunks(total, CHUNK_SIZE, CHUNK_OVERLAP);
+        let chunk_size = 480_000;
+        let overlap = 16_000;
+        let total = 1_000_000;
+        let chunks = compute_chunks(total, chunk_size, overlap);
         assert_eq!(chunks.first().unwrap().0, 0);
         assert_eq!(chunks.last().unwrap().1, total);
+    }
+
+    #[test]
+    fn test_chunk_overlap_exact_match() {
+        let prev = "hello world this is a test";
+        let next = "is a test and more content follows";
+        let result = remove_chunk_text_overlap(prev, next, 20);
+        assert_eq!(result, "and more content follows");
+    }
+
+    #[test]
+    fn test_chunk_overlap_no_match() {
+        let prev = "hello world";
+        let next = "completely different text";
+        let result = remove_chunk_text_overlap(prev, next, 20);
+        assert_eq!(result, "completely different text");
+    }
+
+    #[test]
+    fn test_chunk_overlap_single_word() {
+        let prev = "the quick brown fox";
+        let next = "fox jumped over the fence";
+        let result = remove_chunk_text_overlap(prev, next, 20);
+        assert_eq!(result, "jumped over the fence");
+    }
+
+    #[test]
+    fn test_chunk_overlap_empty_after_removal() {
+        let prev = "hello world";
+        let next = "hello world";
+        let result = remove_chunk_text_overlap(prev, next, 20);
+        assert_eq!(result, "");
+    }
+
+    #[test]
+    fn test_chunk_overlap_respects_max_words() {
+        let prev = "a b c d e f g";
+        let next = "a b c d e f g h i j";
+        // With max_overlap_words=3, won't find the 7-word overlap
+        let result = remove_chunk_text_overlap(prev, next, 3);
+        assert_eq!(result, "a b c d e f g h i j");
     }
 
     #[test]
